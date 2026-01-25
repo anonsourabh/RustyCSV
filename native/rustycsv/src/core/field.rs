@@ -138,7 +138,7 @@ pub fn parse_line_fields_cow(line: &[u8]) -> Vec<Cow<'_, [u8]>> {
 
 #[allow(dead_code)]
 fn parse_line_simple_cow(line: &[u8]) -> Vec<Cow<'_, [u8]>> {
-    let mut fields = Vec::new();
+    let mut fields = Vec::with_capacity(8);
     let mut pos = 0;
 
     while pos < line.len() {
@@ -157,7 +157,7 @@ fn parse_line_simple_cow(line: &[u8]) -> Vec<Cow<'_, [u8]>> {
 
 #[allow(dead_code)]
 fn parse_line_quoted_cow(line: &[u8]) -> Vec<Cow<'_, [u8]>> {
-    let mut fields = Vec::new();
+    let mut fields = Vec::with_capacity(8);
     let mut pos = 0;
     let mut field_start = 0;
     let mut in_quotes = false;
@@ -214,7 +214,7 @@ pub fn parse_line_fields(line: &[u8]) -> Vec<&[u8]> {
 /// Parse a simple line (no quotes) into fields
 #[allow(dead_code)]
 fn parse_line_simple(line: &[u8]) -> Vec<&[u8]> {
-    let mut fields = Vec::new();
+    let mut fields = Vec::with_capacity(8);
     let mut pos = 0;
 
     while pos < line.len() {
@@ -234,7 +234,7 @@ fn parse_line_simple(line: &[u8]) -> Vec<&[u8]> {
 /// Parse a line with quotes
 #[allow(dead_code)]
 fn parse_line_quoted(line: &[u8]) -> Vec<&[u8]> {
-    let mut fields = Vec::new();
+    let mut fields = Vec::with_capacity(8);
     let mut pos = 0;
     let mut field_start = 0;
     let mut in_quotes = false;
@@ -298,7 +298,8 @@ fn parse_line_simple_owned(line: &[u8]) -> Vec<Vec<u8>> {
 }
 
 fn parse_line_simple_owned_with_sep(line: &[u8], separator: u8) -> Vec<Vec<u8>> {
-    let mut fields = Vec::new();
+    // Pre-allocate with estimate of ~8 fields per row
+    let mut fields = Vec::with_capacity(8);
     let mut pos = 0;
 
     while pos < line.len() {
@@ -321,7 +322,8 @@ fn parse_line_quoted_owned(line: &[u8]) -> Vec<Vec<u8>> {
 }
 
 fn parse_line_quoted_owned_with_config(line: &[u8], separator: u8, escape: u8) -> Vec<Vec<u8>> {
-    let mut fields = Vec::new();
+    // Pre-allocate with estimate of ~8 fields per row
+    let mut fields = Vec::with_capacity(8);
     let mut pos = 0;
     let mut field_start = 0;
     let mut in_quotes = false;

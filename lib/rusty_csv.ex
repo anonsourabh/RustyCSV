@@ -1,6 +1,6 @@
 defmodule RustyCSV do
   @moduledoc ~S"""
-  RustyCSV is a high-performance CSV parsing and dumping library powered by Rust NIFs.
+  RustyCSV is an ultra-fast CSV parsing and dumping library powered by purpose-built Rust NIFs.
 
   It provides a drop-in replacement for NimbleCSV with the same API, while offering
   multiple parsing strategies optimized for different use cases.
@@ -37,7 +37,8 @@ defmodule RustyCSV do
     * `:simd` - SIMD-accelerated scanning via memchr (default, fastest for most files)
     * `:basic` - Simple byte-by-byte parsing (good for debugging)
     * `:indexed` - Two-phase index-then-extract (good for re-extracting rows)
-    * `:parallel` - Multi-threaded via rayon (best for very large files 100MB+)
+    * `:parallel` - Multi-threaded via rayon (best for very large files 500MB+ with complex quoting)
+    * `:zero_copy` - Sub-binary references (NimbleCSV-like memory profile, max speed)
 
   Example:
 
@@ -113,6 +114,41 @@ defmodule RustyCSV do
   @type rows :: [row()]
 
   @typedoc """
+  Parsing strategy to use.
+
+  ## Available Strategies
+
+    * `:simd` - SIMD-accelerated scanning via memchr (default, fastest for most files)
+    * `:basic` - Simple byte-by-byte parsing (useful for debugging)
+    * `:indexed` - Two-phase index-then-extract (good for re-extracting rows)
+    * `:parallel` - Multi-threaded via rayon (best for very large files 500MB+ with complex quoting)
+    * `:zero_copy` - Sub-binary references (maximum speed, keeps parent binary alive)
+
+  ## Memory Model Comparison
+
+  | Strategy | Memory Model | Input Binary | Best When |
+  |----------|--------------|--------------|-----------|
+  | `:simd` | Copy | Freed immediately | Default, memory-constrained |
+  | `:basic` | Copy | Freed immediately | Debugging, baseline |
+  | `:indexed` | Copy | Freed immediately | Row range extraction |
+  | `:parallel` | Copy | Freed immediately | Large files, complex CSVs |
+  | `:zero_copy` | Sub-binary | Kept alive | Speed-critical, short-lived |
+
+  ## Examples
+
+      # Default SIMD strategy
+      CSV.parse_string(data)
+
+      # Parallel for large files
+      CSV.parse_string(large_data, strategy: :parallel)
+
+      # Zero-copy for maximum speed
+      CSV.parse_string(data, strategy: :zero_copy)
+
+  """
+  @type strategy :: :simd | :basic | :indexed | :parallel | :zero_copy
+
+  @typedoc """
   Options for parsing functions.
 
   ## Common Options
@@ -123,6 +159,7 @@ defmodule RustyCSV do
       * `:basic` - Simple byte-by-byte
       * `:indexed` - Two-phase index-then-extract
       * `:parallel` - Multi-threaded via rayon
+      * `:zero_copy` - Sub-binary references (keeps parent binary alive)
 
   ## Streaming Options
 
@@ -132,7 +169,7 @@ defmodule RustyCSV do
   """
   @type parse_options :: [
           skip_headers: boolean(),
-          strategy: :simd | :basic | :indexed | :parallel,
+          strategy: strategy(),
           chunk_size: pos_integer(),
           batch_size: pos_integer()
         ]
@@ -184,7 +221,7 @@ defmodule RustyCSV do
           reserved: [String.t()],
           escape_formula: map() | nil,
           encoding: encoding(),
-          strategy: :simd | :basic | :indexed | :parallel,
+          strategy: strategy(),
           moduledoc: String.t() | false | nil
         ]
 
@@ -319,6 +356,7 @@ defmodule RustyCSV do
       * `:basic` - Simple byte-by-byte parsing
       * `:indexed` - Two-phase index-then-extract
       * `:parallel` - Multi-threaded via rayon
+      * `:zero_copy` - Sub-binary references (NimbleCSV-like memory, max speed)
 
   ### Documentation
 
@@ -609,6 +647,10 @@ defmodule RustyCSV do
 
       defp do_parse_string(string, :parallel) do
         RustyCSV.Native.parse_string_parallel_with_config(string, @separator_byte, @escape_byte)
+      end
+
+      defp do_parse_string(string, :zero_copy) do
+        RustyCSV.Native.parse_string_zero_copy_with_config(string, @separator_byte, @escape_byte)
       end
     end
   end

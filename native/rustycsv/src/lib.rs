@@ -6,10 +6,9 @@
 // C: Two-phase index-then-extract (parse_string_indexed)
 // D: Streaming chunked parser (streaming_*)
 // E: Parallel parsing via rayon (parse_string_parallel)
+// F: Zero-copy sub-binary parsing (parse_string_zero_copy)
 
 use rustler::{Binary, Env, NifResult, ResourceArc, Term};
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod core;
 mod resource;
@@ -18,74 +17,119 @@ mod term;
 
 use resource::{StreamingParserRef, StreamingParserResource};
 use strategy::{
-    parse_csv, parse_csv_fast, parse_csv_fast_with_config, parse_csv_indexed,
-    parse_csv_indexed_with_config, parse_csv_parallel, parse_csv_parallel_with_config,
-    parse_csv_with_config,
+    parse_csv, parse_csv_boundaries_with_config, parse_csv_fast, parse_csv_fast_with_config,
+    parse_csv_indexed, parse_csv_indexed_with_config, parse_csv_parallel,
+    parse_csv_parallel_with_config, parse_csv_with_config,
 };
-use term::{cow_rows_to_term, owned_rows_to_term};
+use term::{boundaries_to_term_hybrid, cow_rows_to_term, owned_rows_to_term};
 
 // ============================================================================
-// Tracking Allocator - measures Rust-side memory usage (invisible to BEAM)
+// Allocator Configuration
 // ============================================================================
 
-static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
-static PEAK_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+// When memory_tracking is enabled, wrap the allocator to track usage
+#[cfg(feature = "memory_tracking")]
+mod tracking {
+    use std::alloc::{GlobalAlloc, Layout};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-struct TrackingAllocator;
+    pub static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+    pub static PEAK_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 
-unsafe impl GlobalAlloc for TrackingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = System.alloc(layout);
-        if !ptr.is_null() {
-            let current = ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-            // Update peak if we exceeded it
-            let mut peak = PEAK_ALLOCATED.load(Ordering::Relaxed);
-            while current > peak {
-                match PEAK_ALLOCATED.compare_exchange_weak(
-                    peak,
-                    current,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(p) => peak = p,
+    pub struct TrackingAllocator;
+
+    #[cfg(feature = "mimalloc")]
+    static UNDERLYING: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+    #[cfg(not(feature = "mimalloc"))]
+    static UNDERLYING: std::alloc::System = std::alloc::System;
+
+    unsafe impl GlobalAlloc for TrackingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let ptr = UNDERLYING.alloc(layout);
+            if !ptr.is_null() {
+                let current = ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
+                let mut peak = PEAK_ALLOCATED.load(Ordering::Relaxed);
+                while current > peak {
+                    match PEAK_ALLOCATED.compare_exchange_weak(
+                        peak,
+                        current,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(p) => peak = p,
+                    }
                 }
             }
+            ptr
         }
-        ptr
-    }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        ALLOCATED.fetch_sub(layout.size(), Ordering::Relaxed);
-        System.dealloc(ptr, layout)
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            ALLOCATED.fetch_sub(layout.size(), Ordering::Relaxed);
+            UNDERLYING.dealloc(ptr, layout)
+        }
     }
 }
 
+#[cfg(feature = "memory_tracking")]
 #[global_allocator]
-static GLOBAL: TrackingAllocator = TrackingAllocator;
+static GLOBAL: tracking::TrackingAllocator = tracking::TrackingAllocator;
+
+// When memory_tracking is disabled, use mimalloc directly (no overhead)
+#[cfg(all(feature = "mimalloc", not(feature = "memory_tracking")))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 // ============================================================================
-// Memory Tracking NIFs
+// Memory Tracking NIFs (only available when memory_tracking feature is enabled)
 // ============================================================================
 
-/// Get current Rust heap allocation in bytes
+#[cfg(feature = "memory_tracking")]
+use std::sync::atomic::Ordering;
+
+/// Get current Rust heap allocation in bytes (requires memory_tracking feature)
+#[cfg(feature = "memory_tracking")]
 #[rustler::nif]
 fn get_rust_memory() -> usize {
-    ALLOCATED.load(Ordering::SeqCst)
+    tracking::ALLOCATED.load(Ordering::SeqCst)
 }
 
-/// Get peak Rust heap allocation since last reset
+/// Get peak Rust heap allocation since last reset (requires memory_tracking feature)
+#[cfg(feature = "memory_tracking")]
 #[rustler::nif]
 fn get_rust_memory_peak() -> usize {
-    PEAK_ALLOCATED.load(Ordering::SeqCst)
+    tracking::PEAK_ALLOCATED.load(Ordering::SeqCst)
 }
 
-/// Reset memory stats (useful before benchmarking)
+/// Reset memory stats (requires memory_tracking feature)
+#[cfg(feature = "memory_tracking")]
 #[rustler::nif]
 fn reset_rust_memory_stats() -> (usize, usize) {
-    let current = ALLOCATED.load(Ordering::SeqCst);
-    let peak = PEAK_ALLOCATED.swap(current, Ordering::SeqCst);
+    let current = tracking::ALLOCATED.load(Ordering::SeqCst);
+    let peak = tracking::PEAK_ALLOCATED.swap(current, Ordering::SeqCst);
     (current, peak)
+}
+
+/// Stub: returns 0 when memory_tracking is disabled
+#[cfg(not(feature = "memory_tracking"))]
+#[rustler::nif]
+fn get_rust_memory() -> usize {
+    0
+}
+
+/// Stub: returns 0 when memory_tracking is disabled
+#[cfg(not(feature = "memory_tracking"))]
+#[rustler::nif]
+fn get_rust_memory_peak() -> usize {
+    0
+}
+
+/// Stub: returns (0, 0) when memory_tracking is disabled
+#[cfg(not(feature = "memory_tracking"))]
+#[rustler::nif]
+fn reset_rust_memory_stats() -> (usize, usize) {
+    (0, 0)
 }
 
 // ============================================================================
@@ -242,6 +286,36 @@ fn parse_string_parallel_with_config<'a>(
     let bytes = input.as_slice();
     let rows = parse_csv_parallel_with_config(bytes, separator, escape);
     Ok(owned_rows_to_term(env, rows))
+}
+
+// ============================================================================
+// Strategy F: Zero-Copy Parser (Sub-binary references)
+// ============================================================================
+
+/// Parse CSV using zero-copy sub-binaries where possible
+/// Uses sub-binary references for unquoted and simply-quoted fields,
+/// only copies when quote unescaping is needed (hybrid Cow approach).
+///
+/// Trade-off: Sub-binaries keep the parent binary alive. Use when you
+/// want maximum speed and control memory lifetime yourself.
+#[rustler::nif]
+fn parse_string_zero_copy<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
+    let bytes = input.as_slice();
+    let boundaries = parse_csv_boundaries_with_config(bytes, b',', b'"');
+    Ok(boundaries_to_term_hybrid(env, input, boundaries, b'"'))
+}
+
+/// Parse CSV using zero-copy with configurable separator and escape
+#[rustler::nif]
+fn parse_string_zero_copy_with_config<'a>(
+    env: Env<'a>,
+    input: Binary<'a>,
+    separator: u8,
+    escape: u8,
+) -> NifResult<Term<'a>> {
+    let bytes = input.as_slice();
+    let boundaries = parse_csv_boundaries_with_config(bytes, separator, escape);
+    Ok(boundaries_to_term_hybrid(env, input, boundaries, escape))
 }
 
 // ============================================================================

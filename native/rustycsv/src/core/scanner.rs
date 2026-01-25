@@ -1,6 +1,6 @@
 // Row and field boundary detection using memchr (SIMD-accelerated)
 
-use memchr::memchr;
+use memchr::{memchr, memchr3};
 
 /// Find the next newline position, handling \r\n
 /// Returns (line_end_exclusive, next_line_start)
@@ -36,47 +36,60 @@ pub fn find_row_starts(input: &[u8]) -> Vec<usize> {
 }
 
 /// Find all row start positions with configurable escape character
+/// Uses SIMD-accelerated scanning via memchr3 to skip non-interesting bytes
 pub fn find_row_starts_with_escape(input: &[u8], escape: u8) -> Vec<usize> {
-    let mut starts = vec![0];
+    // Pre-allocate with estimate of ~50 bytes per row
+    let mut starts = Vec::with_capacity(input.len() / 50 + 1);
+    starts.push(0);
     let mut pos = 0;
     let mut in_quotes = false;
 
     while pos < input.len() {
-        let byte = input[pos];
-
         if in_quotes {
-            if byte == escape {
-                if pos + 1 < input.len() && input[pos + 1] == escape {
-                    pos += 2;
-                    continue;
+            // Inside quotes: SIMD jump to next escape char only
+            match memchr(escape, &input[pos..]) {
+                Some(offset) => {
+                    let found = pos + offset;
+                    // Handle escaped quote "" (RFC 4180)
+                    if found + 1 < input.len() && input[found + 1] == escape {
+                        pos = found + 2; // Skip both, stay in quotes
+                    } else {
+                        in_quotes = false;
+                        pos = found + 1;
+                    }
                 }
-                in_quotes = false;
+                None => break, // Unclosed quote, done scanning
             }
-            pos += 1;
         } else {
-            match byte {
-                b if b == escape => {
-                    in_quotes = true;
-                    pos += 1;
-                }
-                b'\n' => {
-                    pos += 1;
-                    if pos < input.len() {
-                        starts.push(pos);
+            // Outside quotes: SIMD jump to next interesting byte
+            match memchr3(escape, b'\n', b'\r', &input[pos..]) {
+                Some(offset) => {
+                    let found = pos + offset;
+                    match input[found] {
+                        b if b == escape => {
+                            in_quotes = true;
+                            pos = found + 1;
+                        }
+                        b'\n' => {
+                            pos = found + 1;
+                            if pos < input.len() {
+                                starts.push(pos);
+                            }
+                        }
+                        b'\r' => {
+                            pos = found + 1;
+                            // Skip \n if CRLF
+                            if pos < input.len() && input[pos] == b'\n' {
+                                pos += 1;
+                            }
+                            if pos < input.len() {
+                                starts.push(pos);
+                            }
+                        }
+                        _ => unreachable!(),
                     }
                 }
-                b'\r' => {
-                    pos += 1;
-                    if pos < input.len() && input[pos] == b'\n' {
-                        pos += 1;
-                    }
-                    if pos < input.len() {
-                        starts.push(pos);
-                    }
-                }
-                _ => {
-                    pos += 1;
-                }
+                None => break, // No more interesting bytes
             }
         }
     }

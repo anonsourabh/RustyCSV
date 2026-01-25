@@ -38,3 +38,4 @@ Thumbs.db
 
 # Benchmark artifacts
 /bench/*.csv
+/bench/data/

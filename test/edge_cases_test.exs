@@ -273,7 +273,7 @@ defmodule EdgeCasesTest do
   end
 
   describe "all strategies produce identical output" do
-    @strategies [:basic, :simd, :indexed, :parallel]
+    @strategies [:basic, :simd, :indexed, :parallel, :zero_copy]
     @test_cases [
       {"simple", "a,b,c\n1,2,3\n"},
       {"quoted", "\"a,b\",c\n1,\"2,3\"\n"},

@@ -108,7 +108,7 @@ defmodule CsvSpectrumTest do
   end
 
   describe "csv-spectrum with all strategies" do
-    @strategies [:basic, :simd, :indexed, :parallel]
+    @strategies [:basic, :simd, :indexed, :parallel, :zero_copy]
 
     for strategy <- @strategies do
       test "all tests pass with #{strategy} strategy" do

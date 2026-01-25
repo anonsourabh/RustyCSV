@@ -8,21 +8,33 @@ defmodule RustyCSV.Native do
 
   ## Strategies
 
-  The module exposes multiple parsing strategies:
+  The module exposes six parsing strategies:
 
     * `parse_string/1` - Basic byte-by-byte parsing (Strategy A)
     * `parse_string_fast/1` - SIMD-accelerated via memchr (Strategy B)
     * `parse_string_indexed/1` - Two-phase index-then-extract (Strategy C)
     * `parse_string_parallel/1` - Multi-threaded via rayon (Strategy E)
+    * `parse_string_zero_copy/1` - Sub-binary references (Strategy F)
     * `streaming_*` functions - Stateful streaming parser (Strategy D)
 
-  ## Memory Tracking
+  ## Strategy Selection
 
-  For benchmarking purposes, functions are provided to track Rust-side memory:
+  | Strategy | Use Case | Memory Model |
+  |----------|----------|--------------|
+  | `parse_string_fast/1` | Default, most files | Copy (frees input) |
+  | `parse_string_parallel/1` | Large files 100MB+ | Copy (frees input) |
+  | `parse_string_zero_copy/1` | Maximum speed | Sub-binary (keeps input) |
+  | `parse_string_indexed/1` | Row range extraction | Copy (frees input) |
+  | `streaming_*` | Unbounded files | Copy (per chunk) |
+  | `parse_string/1` | Debugging | Copy (frees input) |
 
-    * `get_rust_memory/0` - Current allocation
-    * `get_rust_memory_peak/0` - Peak allocation since reset
-    * `reset_rust_memory_stats/0` - Reset tracking
+  ## Memory Tracking (Optional)
+
+  Memory tracking functions are available but require the `memory_tracking`
+  Cargo feature to be enabled. Without the feature, they return `0` with
+  no runtime overhead.
+
+  See `get_rust_memory/0`, `get_rust_memory_peak/0`, `reset_rust_memory_stats/0`.
 
   """
 
@@ -53,6 +65,12 @@ defmodule RustyCSV.Native do
 
   @typedoc "Multiple parsed rows"
   @type rows :: [row()]
+
+  @typedoc "Field separator byte (e.g., `,` = 44, `\\t` = 9)"
+  @type separator :: non_neg_integer()
+
+  @typedoc "Quote/escape byte (e.g., `\"` = 34)"
+  @type escape :: non_neg_integer()
 
   # ==========================================================================
   # Strategy A: Basic Parsing
@@ -293,14 +311,57 @@ defmodule RustyCSV.Native do
     do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
-  # Memory Tracking (Benchmarking)
+  # Strategy F: Zero-Copy Parsing (Sub-binary references)
+  # ==========================================================================
+
+  @doc """
+  Parse CSV using zero-copy sub-binary references where possible.
+
+  Uses BEAM sub-binary references for unquoted and simply-quoted fields,
+  only copying when quote unescaping is needed (hybrid Cow approach).
+
+  **Trade-off**: Sub-binaries keep the parent binary alive until all
+  references are garbage collected. Use this when you want maximum speed
+  and control memory lifetime yourself.
+
+  ## Examples
+
+      iex> RustyCSV.Native.parse_string_zero_copy("a,b\\n1,2\\n")
+      [["a", "b"], ["1", "2"]]
+
+  """
+  @spec parse_string_zero_copy(binary()) :: rows()
+  def parse_string_zero_copy(_csv), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Parse CSV using zero-copy with configurable separator and escape.
+
+  ## Examples
+
+      # TSV zero-copy parsing (tab-separated)
+      iex> RustyCSV.Native.parse_string_zero_copy_with_config("a\\tb\\n1\\t2\\n", 9, 34)
+      [["a", "b"], ["1", "2"]]
+
+  """
+  @spec parse_string_zero_copy_with_config(binary(), non_neg_integer(), non_neg_integer()) ::
+          rows()
+  def parse_string_zero_copy_with_config(_csv, _separator, _escape),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  # ==========================================================================
+  # Memory Tracking (requires `memory_tracking` feature flag)
   # ==========================================================================
 
   @doc """
   Get current Rust heap allocation in bytes.
 
-  This measures memory allocated through Rust's global allocator,
-  which is invisible to BEAM's `:erlang.memory/0`.
+  **Note**: Requires the `memory_tracking` Cargo feature to be enabled.
+  Without the feature, this returns `0` with no overhead.
+
+  To enable memory tracking, set the feature in `native/rustycsv/Cargo.toml`:
+
+      [features]
+      default = ["mimalloc", "memory_tracking"]
 
   ## Examples
 
@@ -313,6 +374,8 @@ defmodule RustyCSV.Native do
   @doc """
   Get peak Rust heap allocation since last reset, in bytes.
 
+  **Note**: Requires the `memory_tracking` Cargo feature. Returns `0` otherwise.
+
   ## Examples
 
       peak_bytes = RustyCSV.Native.get_rust_memory_peak()
@@ -323,6 +386,8 @@ defmodule RustyCSV.Native do
 
   @doc """
   Reset memory tracking statistics.
+
+  **Note**: Requires the `memory_tracking` Cargo feature. Returns `{0, 0}` otherwise.
 
   Returns `{current_bytes, previous_peak_bytes}`.
 

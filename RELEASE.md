@@ -19,8 +19,10 @@
    ```bash
    gh release edit vx.y.z --draft=false
    ```
-9. Generate checksums: `mix rustler_precompiled.download RustyCSV --all --print`
-10. Commit checksums: `git add checksum-Elixir.RustyCSV.exs && git commit -m "Add vx.y.z checksums" && git push`
+9. Clear checksum and generate new checksums: `rm -f checksum-Elixir.RustyCSV.Native.exs && FORCE_RUSTYCSV_BUILD=1 mix compile && mix rustler_precompiled.download RustyCSV.Native --all --print`
+
+10. Commit checksums: `git add checksum-Elixir.RustyCSV.Native.exs && git commit -m "Add vx.y.z checksums" && git push`
+
 11. Publish to Hex: `mix hex.publish`
 
 ## Important Notes
