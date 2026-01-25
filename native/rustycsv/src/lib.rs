@@ -8,8 +8,14 @@
 // E: Parallel parsing via rayon (parse_string_parallel)
 
 use rustler::{Binary, Env, NifResult, ResourceArc, Term};
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
+
+#[cfg(not(feature = "mimalloc"))]
+use std::alloc::System;
 
 mod core;
 mod resource;
@@ -33,9 +39,15 @@ static PEAK_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 
 struct TrackingAllocator;
 
+#[cfg(feature = "mimalloc")]
+static BASE_ALLOCATOR: MiMalloc = MiMalloc;
+
+#[cfg(not(feature = "mimalloc"))]
+static BASE_ALLOCATOR: System = System;
+
 unsafe impl GlobalAlloc for TrackingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = System.alloc(layout);
+        let ptr = BASE_ALLOCATOR.alloc(layout);
         if !ptr.is_null() {
             let current = ALLOCATED.fetch_add(layout.size(), Ordering::SeqCst) + layout.size();
             // Update peak if we exceeded it
@@ -57,7 +69,7 @@ unsafe impl GlobalAlloc for TrackingAllocator {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         ALLOCATED.fetch_sub(layout.size(), Ordering::SeqCst);
-        System.dealloc(ptr, layout)
+        BASE_ALLOCATOR.dealloc(ptr, layout)
     }
 }
 
