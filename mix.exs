@@ -48,6 +48,7 @@ defmodule RustyCSV.MixProject do
         native/rustycsv/src
         native/rustycsv/Cargo.toml
         native/rustycsv/Cargo.lock
+        checksum-Elixir.RustyCSV.Native.exs
         .formatter.exs
         mix.exs
         README.md
@@ -92,7 +93,8 @@ defmodule RustyCSV.MixProject do
 
   defp deps do
     [
-      {:rustler, "~> 0.37"},
+      {:rustler, "~> 0.37", optional: true},
+      {:rustler_precompiled, "~> 0.8"},
       {:nimble_csv, "~> 1.2"},
       {:benchee, "~> 1.0", only: :dev},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

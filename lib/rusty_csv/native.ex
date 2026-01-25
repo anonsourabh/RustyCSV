@@ -26,9 +26,19 @@ defmodule RustyCSV.Native do
 
   """
 
-  use Rustler,
+  version = Mix.Project.config()[:version]
+
+  use RustlerPrecompiled,
     otp_app: :rusty_csv,
-    crate: "rustycsv"
+    crate: "rustycsv",
+    base_url: "https://github.com/jeffhuen/rustycsv/releases/download/v#{version}",
+    force_build: System.get_env("FORCE_RUSTYCSV_BUILD") in ["1", "true"],
+    targets:
+      Enum.uniq(
+        ["aarch64-apple-darwin", "x86_64-apple-darwin"] ++
+          RustlerPrecompiled.Config.default_targets()
+      ),
+    version: version
 
   # ==========================================================================
   # Types
