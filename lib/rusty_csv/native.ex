@@ -33,6 +33,7 @@ defmodule RustyCSV.Native do
     crate: "rustycsv",
     base_url: "https://github.com/jeffhuen/rustycsv/releases/download/v#{version}",
     force_build: System.get_env("FORCE_RUSTYCSV_BUILD") in ["1", "true"],
+    nif_versions: ["2.15", "2.16", "2.17"],
     targets:
       Enum.uniq(
         ["aarch64-apple-darwin", "x86_64-apple-darwin"] ++
