@@ -68,12 +68,12 @@ jobs:
         id: build-crate
         uses: philss/rustler-precompiled-action@v1.1.4
         with:
-          project-name: rustyjson
+          project-name: rustycsv
           project-version: ${{ env.PROJECT_VERSION }}
           target: ${{ matrix.job.target }}
           nif-version: ${{ matrix.nif }}
           use-cross: ${{ matrix.job.use-cross }}
-          project-dir: "native/rustyjson"
+          project-dir: "native/rustycsv"
 
       - name: Artifact upload
         uses: actions/upload-artifact@v4
