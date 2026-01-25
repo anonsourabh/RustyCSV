@@ -1,0 +1,18 @@
+[package]
+name = "rustycsv"
+version = "0.1.0"
+authors = ["Jeff Huen"]
+edition = "2021"
+
+[lib]
+name = "rustycsv"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.37"
+memchr = "2.7"    # Fast byte searching, uses SIMD when available
+rayon = "1.10"    # Data parallelism for parallel parsing
+
+[features]
+default = []
