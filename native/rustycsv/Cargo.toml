@@ -16,3 +16,8 @@ rayon = "1.10"    # Data parallelism for parallel parsing
 
 [features]
 default = []
+# NIF version features required by rustler_precompiled
+nif_version_2_14 = ["rustler/nif_version_2_14"]
+nif_version_2_15 = ["rustler/nif_version_2_15"]
+nif_version_2_16 = ["rustler/nif_version_2_16"]
+nif_version_2_17 = ["rustler/nif_version_2_17"]
