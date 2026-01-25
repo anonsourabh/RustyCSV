@@ -45,12 +45,20 @@ defmodule RustyCSV.Streaming do
         |> Enum.each(&IO.inspect/1)
       end)
 
+  ## Encoding Support
+
+  The streaming functions support character encoding conversion via the
+  `:encoding` option. When a non-UTF8 encoding is specified, the stream
+  is automatically converted to UTF-8 before parsing, with proper handling
+  of multi-byte character boundaries across chunks.
+
   ## Implementation Notes
 
   The streaming parser:
 
     * Handles quoted fields that span multiple chunks correctly
     * Preserves quote state across chunk boundaries
+    * Handles multi-byte character boundaries for non-UTF8 encodings
     * Compacts internal buffer to prevent unbounded growth
     * Returns owned data (copies bytes) since input chunks are temporary
 
@@ -68,7 +76,10 @@ defmodule RustyCSV.Streaming do
           chunk_size: pos_integer(),
           batch_size: pos_integer(),
           separator: non_neg_integer(),
-          escape: non_neg_integer()
+          escape: non_neg_integer(),
+          encoding: RustyCSV.encoding(),
+          bom: binary(),
+          trim_bom: boolean()
         ]
 
   # ==========================================================================
@@ -148,6 +159,12 @@ defmodule RustyCSV.Streaming do
 
     * `:batch_size` - Maximum rows to yield per iteration. Defaults to `1000`.
 
+    * `:encoding` - Character encoding of input. Defaults to `:utf8`.
+
+    * `:bom` - BOM to strip if `:trim_bom` is true. Defaults to `""`.
+
+    * `:trim_bom` - Whether to strip BOM from start. Defaults to `false`.
+
   ## Examples
 
       # Parse from a list of chunks
@@ -167,12 +184,75 @@ defmodule RustyCSV.Streaming do
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     separator = Keyword.get(opts, :separator, ?,)
     escape = Keyword.get(opts, :escape, ?")
+    encoding = Keyword.get(opts, :encoding, :utf8)
+    bom = Keyword.get(opts, :bom, "")
+    trim_bom = Keyword.get(opts, :trim_bom, false)
+
+    # If encoding is not UTF-8, convert stream to UTF-8 first
+    converted_enumerable =
+      if encoding == :utf8 do
+        if trim_bom and bom != "" do
+          strip_bom_stream(enumerable, bom)
+        else
+          enumerable
+        end
+      else
+        enumerable
+        |> maybe_strip_bom_stream(trim_bom, bom)
+        |> convert_stream_to_utf8(encoding)
+      end
 
     Stream.resource(
-      fn -> init_enum_stream(enumerable, batch_size, separator, escape) end,
+      fn -> init_enum_stream(converted_enumerable, batch_size, separator, escape) end,
       &next_rows_enum/1,
       fn _state -> :ok end
     )
+  end
+
+  # Strip BOM from first chunk of stream if present
+  defp strip_bom_stream(enumerable, bom) do
+    bom_size = byte_size(bom)
+
+    Stream.transform(enumerable, true, fn
+      chunk, true ->
+        # First chunk - check and strip BOM
+        if binary_part(chunk, 0, min(byte_size(chunk), bom_size)) == bom do
+          {[binary_part(chunk, bom_size, byte_size(chunk) - bom_size)], false}
+        else
+          {[chunk], false}
+        end
+
+      chunk, false ->
+        {[chunk], false}
+    end)
+  end
+
+  defp maybe_strip_bom_stream(enumerable, true, bom) when bom != "",
+    do: strip_bom_stream(enumerable, bom)
+
+  defp maybe_strip_bom_stream(enumerable, _, _), do: enumerable
+
+  # Convert stream from source encoding to UTF-8, handling multi-byte boundaries
+  defp convert_stream_to_utf8(stream, encoding) do
+    Stream.transform(stream, <<>>, fn chunk, acc ->
+      input = acc <> chunk
+
+      case :unicode.characters_to_binary(input, encoding, :utf8) do
+        binary when is_binary(binary) ->
+          # Full conversion succeeded
+          {[binary], <<>>}
+
+        {:incomplete, converted, rest} ->
+          # Partial conversion - rest contains incomplete multi-byte sequence
+          {[converted], rest}
+
+        {:error, converted, rest} ->
+          raise RustyCSV.ParseError,
+            message:
+              "Invalid #{inspect(encoding)} sequence at byte #{byte_size(converted)}: " <>
+                "#{inspect(binary_part(rest, 0, min(byte_size(rest), 10)))}"
+      end
+    end)
   end
 
   @doc """

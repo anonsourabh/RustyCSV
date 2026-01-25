@@ -286,11 +286,14 @@ defmodule EdgeCasesTest do
     for {name, csv} <- @test_cases do
       test "#{name} consistent across strategies" do
         csv = unquote(csv)
-        results = for strategy <- @strategies do
-          {strategy, CSV.parse_string(csv, skip_headers: false, strategy: strategy)}
-        end
+
+        results =
+          for strategy <- @strategies do
+            {strategy, CSV.parse_string(csv, skip_headers: false, strategy: strategy)}
+          end
 
         [{_, expected} | rest] = results
+
         for {strategy, result} <- rest do
           assert result == expected,
                  "Strategy #{strategy} produced different result for #{unquote(name)}"

@@ -1,6 +1,6 @@
 # RustyCSV Compliance & Validation
 
-RustyCSV takes correctness seriously. With **127 tests** across four test suites, including industry-standard validation suites used by CSV parsers across multiple languages, RustyCSV is one of the most thoroughly tested CSV libraries available for Elixir.
+RustyCSV takes correctness seriously. With **147 tests** across five test suites, including industry-standard validation suites used by CSV parsers across multiple languages, RustyCSV is one of the most thoroughly tested CSV libraries available for Elixir.
 
 This document describes RFC 4180 compliance and the validation methodology.
 
@@ -210,7 +210,8 @@ test/fixtures/
 | csv-spectrum | 12 | Industry acid test |
 | csv-test-data | 17 | RFC 4180 compliance |
 | Edge cases | 53 | Stress testing and malformed input |
-| **Total** | **127** | |
+| Encoding | 20 | UTF-16, UTF-32, Latin-1 conversion |
+| **Total** | **147** | |
 
 ---
 

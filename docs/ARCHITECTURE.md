@@ -33,7 +33,7 @@ No other CSV library offers this level of flexibility:
 
 ### Validated Correctness
 
-- **127 tests** covering RFC 4180, industry test suites, and edge cases
+- **147 tests** covering RFC 4180, industry test suites, edge cases, and encodings
 - **Cross-strategy validation** - All 5 strategies produce identical output
 - **NimbleCSV compatibility** - Verified identical behavior for all API functions
 
@@ -93,7 +93,7 @@ RustyCSV implements the complete NimbleCSV API:
 | `:reserved` | ✅ | ✅ | ✅ |
 | `:escape_formula` | ✅ | ✅ | ✅ |
 | `:moduledoc` | ✅ | ✅ | ✅ |
-| `:encoding` | ✅ | ❌ | Not yet |
+| `:encoding` | ✅ | ✅ | Full support |
 
 ### Migration from NimbleCSV
 
@@ -267,15 +267,12 @@ NIFs should complete in under 1ms to avoid blocking schedulers.
 
 ## Benchmark Results
 
-**Environment**: Apple Silicon, 15 MB CSV (100K rows, 10 columns)
+- **Synthetic benchmarks**: 4-5x faster than NimbleCSV (15MB CSV, 100K rows)
+- **Real-world TSV**: 13-28% faster than NimbleCSV (10K+ rows)
 
-| Parser | Speed | vs NimbleCSV |
-|--------|-------|--------------|
-| RustyCSV (:simd) | ~42ms | 4.5x faster |
-| RustyCSV (:basic) | ~50ms | 3.8x faster |
-| RustyCSV (:indexed) | ~45ms | 4.2x faster |
-| RustyCSV (:parallel) | ~35ms | 5.4x faster |
-| NimbleCSV | ~190ms | baseline |
+The larger the file, the greater the performance gap due to SIMD-accelerated scanning.
+
+See [BENCHMARK.md](BENCHMARK.md) for detailed methodology, real-world results, and raw data.
 
 ## Documentation
 
@@ -300,7 +297,6 @@ See [COMPLIANCE.md](COMPLIANCE.md) for full details on test suites and validatio
 
 ## Future Work
 
-- **Encoding support**: UTF-16, other encodings
 - **Error positions**: Line/column numbers in ParseError
 
 ## References

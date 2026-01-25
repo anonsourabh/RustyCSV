@@ -75,13 +75,26 @@ defmodule RustyCSV do
   The only behavioral difference is that RustyCSV adds the `:strategy` option
   for selecting the parsing approach.
 
-  ## Differences from NimbleCSV
+  ## Encoding Support
 
-  While RustyCSV aims for full compatibility, there are some current limitations:
+  RustyCSV supports character encoding conversion via the `:encoding` option:
 
-    * Encoding conversion (`:encoding` option) is not yet supported
+      RustyCSV.define(MySpreadsheet,
+        separator: "\t",
+        encoding: {:utf16, :little},
+        trim_bom: true,
+        dump_bom: true
+      )
 
-  Configurable separators (TSV, custom delimiters) and escape characters are fully supported.
+  Supported encodings:
+    * `:utf8` - UTF-8 (default, no conversion overhead)
+    * `:latin1` - ISO-8859-1 / Latin-1
+    * `{:utf16, :little}` - UTF-16 Little Endian
+    * `{:utf16, :big}` - UTF-16 Big Endian
+    * `{:utf32, :little}` - UTF-32 Little Endian
+    * `{:utf32, :big}` - UTF-32 Big Endian
+
+  Use `RustyCSV.Spreadsheet` for Excel-compatible UTF-16 LE tab-separated values.
 
   """
 
@@ -125,6 +138,19 @@ defmodule RustyCSV do
         ]
 
   @typedoc """
+  Encoding for CSV data.
+
+  Supported encodings:
+    * `:utf8` - UTF-8 (default, no conversion)
+    * `:latin1` - ISO-8859-1 / Latin-1
+    * `{:utf16, :little}` - UTF-16 Little Endian
+    * `{:utf16, :big}` - UTF-16 Big Endian
+    * `{:utf32, :little}` - UTF-32 Little Endian
+    * `{:utf32, :big}` - UTF-32 Big Endian
+  """
+  @type encoding :: :utf8 | :latin1 | {:utf16, :little | :big} | {:utf32, :little | :big}
+
+  @typedoc """
   Options for `define/2`.
 
   ## Parsing Options
@@ -132,12 +158,13 @@ defmodule RustyCSV do
     * `:separator` - Field separator character. Defaults to `","`.
     * `:escape` - Escape/quote character. Defaults to `"\""`.
     * `:newlines` - List of recognized line endings. Defaults to `["\r\n", "\n"]`.
-    * `:trim_bom` - Remove UTF-8 BOM when parsing strings. Defaults to `false`.
+    * `:trim_bom` - Remove BOM when parsing strings. Defaults to `false`.
+    * `:encoding` - Character encoding. Defaults to `:utf8`. See `t:encoding/0`.
 
   ## Dumping Options
 
     * `:line_separator` - Line separator for output. Defaults to `"\n"`.
-    * `:dump_bom` - Include UTF-8 BOM in output. Defaults to `false`.
+    * `:dump_bom` - Include BOM in output. Defaults to `false`.
     * `:reserved` - Additional characters requiring escaping.
     * `:escape_formula` - Map for formula injection prevention. Defaults to `nil`.
 
@@ -156,6 +183,7 @@ defmodule RustyCSV do
           dump_bom: boolean(),
           reserved: [String.t()],
           escape_formula: map() | nil,
+          encoding: encoding(),
           strategy: :simd | :basic | :indexed | :parallel,
           moduledoc: String.t() | false | nil
         ]
@@ -245,23 +273,33 @@ defmodule RustyCSV do
   ### Parsing Options
 
     * `:separator` - The field separator character. Defaults to `","`.
-      Currently only comma is supported; other separators will raise an error.
 
     * `:escape` - The escape/quote character. Defaults to `"\""`.
-      Currently only double-quote is supported.
 
     * `:newlines` - List of recognized line endings for parsing.
       Defaults to `["\r\n", "\n"]`. Both CRLF and LF are always recognized.
 
-    * `:trim_bom` - When `true`, removes the UTF-8 BOM (byte order marker)
+    * `:trim_bom` - When `true`, removes the BOM (byte order marker)
       from the beginning of strings before parsing. Defaults to `false`.
+
+    * `:encoding` - Character encoding for input/output. Defaults to `:utf8`.
+      Supported encodings:
+      * `:utf8` - UTF-8 (default, no conversion overhead)
+      * `:latin1` - ISO-8859-1 / Latin-1
+      * `{:utf16, :little}` - UTF-16 Little Endian
+      * `{:utf16, :big}` - UTF-16 Big Endian
+      * `{:utf32, :little}` - UTF-32 Little Endian
+      * `{:utf32, :big}` - UTF-32 Big Endian
+
+      When encoding is not `:utf8`, input data is converted to UTF-8 for
+      parsing, and output is converted back to the target encoding.
 
   ### Dumping Options
 
     * `:line_separator` - The line separator for dumped output.
       Defaults to `"\n"`.
 
-    * `:dump_bom` - When `true`, includes a UTF-8 BOM at the start of
+    * `:dump_bom` - When `true`, includes the appropriate BOM at the start of
       dumped output. Defaults to `false`.
 
     * `:reserved` - Additional characters that should trigger field escaping
@@ -300,6 +338,14 @@ defmodule RustyCSV do
       MyApp.CSV.parse_string("a,b\n1,2\n")
       #=> [["1", "2"]]
 
+      # Define a UTF-16 spreadsheet parser
+      RustyCSV.define(MyApp.Spreadsheet,
+        separator: "\t",
+        encoding: {:utf16, :little},
+        trim_bom: true,
+        dump_bom: true
+      )
+
       # Get the configuration
       MyApp.CSV.options()
       #=> [separator: ",", escape: "\"", ...]
@@ -335,6 +381,12 @@ defmodule RustyCSV do
     default_strategy = Keyword.get(options, :strategy, :simd)
     moduledoc = Keyword.get(options, :moduledoc)
 
+    # Encoding support
+    encoding = Keyword.get(options, :encoding, :utf8)
+    validate_encoding!(encoding)
+    bom = :unicode.encoding_to_bom(encoding)
+    encoded_newlines = Enum.map(newlines, &:unicode.characters_to_binary(&1, :utf8, encoding))
+
     escape_chars = [separator, escape, "\n", "\r"] ++ reserved
 
     stored_options = [
@@ -346,6 +398,7 @@ defmodule RustyCSV do
       dump_bom: dump_bom,
       reserved: reserved,
       escape_formula: escape_formula,
+      encoding: encoding,
       strategy: default_strategy
     ]
 
@@ -362,7 +415,10 @@ defmodule RustyCSV do
       escape_formula: escape_formula,
       default_strategy: default_strategy,
       stored_options: stored_options,
-      moduledoc: moduledoc
+      moduledoc: moduledoc,
+      encoding: encoding,
+      bom: bom,
+      encoded_newlines: encoded_newlines
     }
   end
 
@@ -371,6 +427,16 @@ defmodule RustyCSV do
       raise ArgumentError,
             "RustyCSV requires a single-byte #{name}, got: #{inspect(value)}"
     end
+  end
+
+  defp validate_encoding!(encoding) when encoding in [:utf8, :latin1], do: :ok
+  defp validate_encoding!({:utf16, endian}) when endian in [:little, :big], do: :ok
+  defp validate_encoding!({:utf32, endian}) when endian in [:little, :big], do: :ok
+
+  defp validate_encoding!(encoding) do
+    raise ArgumentError,
+          "Invalid encoding: #{inspect(encoding)}. " <>
+            "Supported: :utf8, :latin1, {:utf16, :little}, {:utf16, :big}, {:utf32, :little}, {:utf32, :big}"
   end
 
   # ==========================================================================
@@ -412,7 +478,9 @@ defmodule RustyCSV do
       @escape_formula unquote(Macro.escape(config.escape_formula))
       @default_strategy unquote(Macro.escape(config.default_strategy))
       @stored_options unquote(Macro.escape(config.stored_options))
-      @bom <<0xEF, 0xBB, 0xBF>>
+      @encoding unquote(Macro.escape(config.encoding))
+      @bom unquote(Macro.escape(config.bom))
+      @encoded_newlines unquote(Macro.escape(config.encoded_newlines))
     end
   end
 
@@ -438,13 +506,20 @@ defmodule RustyCSV do
 
   defp quoted_parse_string_function(config) do
     [
-      quoted_parse_string_main(),
+      quoted_parse_string_main(config.encoding),
       quoted_maybe_trim_bom(config.trim_bom),
+      quoted_maybe_to_utf8(config.encoding),
       quoted_do_parse_string_clauses()
     ]
   end
 
-  defp quoted_parse_string_main do
+  defp quoted_parse_string_main(encoding) do
+    encoding_doc =
+      if encoding == :utf8,
+        do: "",
+        else:
+          "\n\n  Input is expected in #{inspect(encoding)} encoding and will be converted to UTF-8 for parsing."
+
     quote do
       @doc """
       Parses a CSV string into a list of rows.
@@ -453,7 +528,7 @@ defmodule RustyCSV do
 
         * `:skip_headers` - When `true`, skips the first row. Defaults to `true`.
         * `:strategy` - The parsing strategy. Defaults to `#{inspect(@default_strategy)}`.
-
+      #{unquote(encoding_doc)}
       """
       @impl RustyCSV
       @spec parse_string(binary(), RustyCSV.parse_options()) :: RustyCSV.rows()
@@ -463,7 +538,7 @@ defmodule RustyCSV do
         strategy = Keyword.get(opts, :strategy, @default_strategy)
         skip_headers = Keyword.get(opts, :skip_headers, true)
 
-        string = maybe_trim_bom(string)
+        string = string |> maybe_trim_bom() |> maybe_to_utf8()
         rows = do_parse_string(string, strategy)
 
         case {skip_headers, rows} do
@@ -484,6 +559,37 @@ defmodule RustyCSV do
   defp quoted_maybe_trim_bom(false) do
     quote do
       defp maybe_trim_bom(string), do: string
+    end
+  end
+
+  # For UTF-8, encoding conversion is a no-op
+  defp quoted_maybe_to_utf8(:utf8) do
+    quote do
+      defp maybe_to_utf8(data), do: data
+    end
+  end
+
+  # For other encodings, convert to UTF-8 using :unicode module
+  defp quoted_maybe_to_utf8(encoding) do
+    quote do
+      defp maybe_to_utf8(data) do
+        case :unicode.characters_to_binary(data, unquote(Macro.escape(encoding)), :utf8) do
+          binary when is_binary(binary) ->
+            binary
+
+          {:incomplete, converted, rest} ->
+            raise RustyCSV.ParseError,
+              message:
+                "Incomplete #{inspect(unquote(Macro.escape(encoding)))} sequence: " <>
+                  "converted #{byte_size(converted)} bytes, #{byte_size(rest)} bytes remaining"
+
+          {:error, converted, rest} ->
+            raise RustyCSV.ParseError,
+              message:
+                "Invalid #{inspect(unquote(Macro.escape(encoding)))} sequence at byte #{byte_size(converted)}: " <>
+                  "#{inspect(binary_part(rest, 0, min(byte_size(rest), 10)))}"
+        end
+      end
     end
   end
 
@@ -526,7 +632,10 @@ defmodule RustyCSV do
             chunk_size: chunk_size,
             batch_size: batch_size,
             separator: @separator_byte,
-            escape: @escape_byte
+            escape: @escape_byte,
+            encoding: @encoding,
+            bom: @bom,
+            trim_bom: @trim_bom
           )
 
         if skip_headers do
@@ -592,8 +701,21 @@ defmodule RustyCSV do
 
   defp quoted_dumping_functions(config) do
     escape_formula_ast = quoted_escape_formula_function(config.escape_formula)
+    maybe_to_encoding_ast = quoted_maybe_to_encoding(config.encoding)
+
+    # Pre-encode delimiters at compile time for non-UTF8 encodings
+    encoded_separator = :unicode.characters_to_binary(config.separator, :utf8, config.encoding)
+    encoded_escape = :unicode.characters_to_binary(config.escape, :utf8, config.encoding)
+
+    encoded_line_separator =
+      :unicode.characters_to_binary(config.line_separator, :utf8, config.encoding)
 
     quote do
+      # Pre-encoded delimiters for dumping
+      @encoded_separator unquote(Macro.escape(encoded_separator))
+      @encoded_escape unquote(Macro.escape(encoded_escape))
+      @encoded_line_separator unquote(Macro.escape(encoded_line_separator))
+
       @doc """
       Converts an enumerable of rows to iodata in CSV format.
       """
@@ -620,7 +742,7 @@ defmodule RustyCSV do
 
       defp dump_row(row) do
         fields = Enum.map(row, &escape_field/1)
-        [Enum.intersperse(fields, @separator), @line_separator]
+        [Enum.intersperse(fields, @encoded_separator), @encoded_line_separator]
       end
 
       defp escape_field(field) when is_binary(field) do
@@ -628,15 +750,39 @@ defmodule RustyCSV do
 
         if String.contains?(field, @escape_chars) do
           escaped = String.replace(field, @escape, @escape <> @escape)
-          [@escape, escaped, @escape]
+          maybe_to_encoding([@encoded_escape, escaped, @encoded_escape])
         else
-          field
+          maybe_to_encoding(field)
         end
       end
 
       defp escape_field(field), do: escape_field(to_string(field))
 
       unquote(escape_formula_ast)
+      unquote(maybe_to_encoding_ast)
+    end
+  end
+
+  # For UTF-8, encoding conversion is a no-op (identity function)
+  defp quoted_maybe_to_encoding(:utf8) do
+    quote do
+      defp maybe_to_encoding(data), do: data
+    end
+  end
+
+  # For other encodings, convert from UTF-8 to target encoding
+  defp quoted_maybe_to_encoding(encoding) do
+    quote do
+      defp maybe_to_encoding(data) do
+        case :unicode.characters_to_binary(data, :utf8, unquote(Macro.escape(encoding))) do
+          binary when is_binary(binary) ->
+            binary
+
+          {:error, _, _} ->
+            raise RustyCSV.ParseError,
+              message: "Cannot encode data to #{inspect(unquote(Macro.escape(encoding)))}"
+        end
+      end
     end
   end
 
@@ -719,6 +865,51 @@ RustyCSV.define(RustyCSV.RFC4180,
       )
 
   To customize these options, define your own parser with `RustyCSV.define/2`.
+
+  """
+)
+
+RustyCSV.define(RustyCSV.Spreadsheet,
+  separator: "\t",
+  escape: "\"",
+  line_separator: "\n",
+  newlines: ["\r\n", "\n"],
+  encoding: {:utf16, :little},
+  trim_bom: true,
+  dump_bom: true,
+  strategy: :simd,
+  moduledoc: ~S"""
+  A spreadsheet-compatible parser using UTF-16 Little Endian encoding.
+
+  This module uses tab (`\t`) as the field separator and double-quote (`"`)
+  as the escape character. It handles UTF-16 LE encoding with BOM, which is
+  the format commonly used by spreadsheet applications like Microsoft Excel.
+
+  This is a drop-in replacement for `NimbleCSV.Spreadsheet`.
+
+  ## Quick Start
+
+      alias RustyCSV.Spreadsheet
+
+      # Parse UTF-16 LE data (with BOM)
+      Spreadsheet.parse_string(utf16_data, skip_headers: false)
+      #=> [["name", "age"], ["john", "27"]]
+
+      # Dump to UTF-16 LE format (includes BOM)
+      Spreadsheet.dump_to_iodata([["name", "age"], ["john", "27"]])
+      |> IO.iodata_to_binary()
+
+  ## Configuration
+
+  This module was defined with:
+
+      RustyCSV.define(RustyCSV.Spreadsheet,
+        separator: "\t",
+        escape: "\"",
+        encoding: {:utf16, :little},
+        trim_bom: true,
+        dump_bom: true
+      )
 
   """
 )

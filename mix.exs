@@ -67,16 +67,18 @@ defmodule RustyCSV.MixProject do
       extras: [
         "README.md": [title: "Overview"],
         "docs/ARCHITECTURE.md": [title: "Architecture"],
+        "docs/BENCHMARK.md": [title: "Real-World Benchmarks"],
         "docs/COMPLIANCE.md": [title: "Compliance & Validation"],
         "CHANGELOG.md": [title: "Changelog"],
         LICENSE: [title: "License"]
       ],
       groups_for_modules: [
-        "Core": [
+        Core: [
           RustyCSV,
-          RustyCSV.RFC4180
+          RustyCSV.RFC4180,
+          RustyCSV.Spreadsheet
         ],
-        "Streaming": [
+        Streaming: [
           RustyCSV.Streaming
         ],
         "Low-Level": [
@@ -84,9 +86,9 @@ defmodule RustyCSV.MixProject do
         ]
       ],
       groups_for_docs: [
-        "Parsing": &(&1[:section] == :parsing),
-        "Dumping": &(&1[:section] == :dumping),
-        "Configuration": &(&1[:section] == :config)
+        Parsing: &(&1[:section] == :parsing),
+        Dumping: &(&1[:section] == :dumping),
+        Configuration: &(&1[:section] == :config)
       ]
     ]
   end

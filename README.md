@@ -3,7 +3,7 @@
 **High-performance CSV parsing for Elixir.** A purpose-built Rust NIF with five parsing strategies, SIMD acceleration, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
 
 [![Hex.pm](https://img.shields.io/hexpm/v/rusty_csv.svg)](https://hex.pm/packages/rusty_csv)
-[![Tests](https://img.shields.io/badge/tests-127%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-147%20passed-brightgreen.svg)]()
 [![RFC 4180](https://img.shields.io/badge/RFC%204180-compliant-blue.svg)]()
 
 ## Why RustyCSV?
@@ -32,9 +32,10 @@
 | **SIMD acceleration** | ✅ via memchr | ❌ |
 | **Parallel parsing** | ✅ via rayon | ❌ |
 | **Streaming (bounded memory)** | ✅ | ❌ (requires full file in memory) |
+| **Encoding support** | ✅ UTF-8, UTF-16, Latin-1, UTF-32 | ✅ |
 | **Parent binary retention** | ❌ (copies to terms) | ✅ (sub-binary refs) |
 | **Drop-in replacement** | ✅ Same API | - |
-| **RFC 4180 compliant** | ✅ 127 tests | ✅ |
+| **RFC 4180 compliant** | ✅ 147 tests | ✅ |
 | **Benchmark (15MB CSV)** | ~42ms | ~190ms |
 
 ## Purpose-Built for Elixir
@@ -126,20 +127,15 @@ All NimbleCSV functions are supported:
 
 ## Benchmarks
 
-**Environment:** Apple Silicon, 15 MB CSV (100K rows, 10 columns)
+**4-5x faster than NimbleCSV** on synthetic benchmarks (15MB CSV, 100K rows).
 
-```
-Name                        ips        average    vs NimbleCSV
-RustyCSV (parallel)       28.57       35.00 ms        5.4x faster
-RustyCSV (simd)           23.77       42.06 ms        4.5x faster
-RustyCSV (indexed)        22.22       45.00 ms        4.2x faster
-RustyCSV (basic)          20.00       50.00 ms        3.8x faster
-NimbleCSV                  5.25      190.33 ms        baseline
-```
+**13-28% faster than NimbleCSV** on real-world TSV files (10K+ rows). The larger the file, the greater the performance gap.
 
 ```bash
 mix run bench/csv_bench.exs
 ```
+
+See [docs/BENCHMARK.md](docs/BENCHMARK.md) for detailed methodology and results.
 
 ### When to Use RustyCSV
 
@@ -183,10 +179,38 @@ MyApp.TSV.parse_string("a\tb\tc\n1\t2\t3\n")
 | `:escape` | Quote character | `"\""` |
 | `:line_separator` | Line ending for dumps | `"\r\n"` |
 | `:newlines` | Accepted line endings | `["\r\n", "\n"]` |
-| `:trim_bom` | Remove UTF-8 BOM | `false` |
-| `:dump_bom` | Add UTF-8 BOM on dump | `false` |
+| `:encoding` | Character encoding (see below) | `:utf8` |
+| `:trim_bom` | Remove BOM when parsing | `false` |
+| `:dump_bom` | Add BOM when dumping | `false` |
 | `:escape_formula` | Escape formula injection | `nil` |
 | `:strategy` | Default parsing strategy | `:simd` |
+
+### Encoding Support
+
+RustyCSV supports character encoding conversion, matching NimbleCSV's encoding options:
+
+```elixir
+# UTF-16 Little Endian (Excel/Windows exports)
+RustyCSV.define(MyApp.Spreadsheet,
+  separator: "\t",
+  encoding: {:utf16, :little},
+  trim_bom: true,
+  dump_bom: true
+)
+
+# Or use the pre-defined spreadsheet parser
+alias RustyCSV.Spreadsheet
+Spreadsheet.parse_string(utf16_data)
+```
+
+| Encoding | Description |
+|----------|-------------|
+| `:utf8` | UTF-8 (default, no conversion overhead) |
+| `:latin1` | ISO-8859-1 / Latin-1 |
+| `{:utf16, :little}` | UTF-16 Little Endian |
+| `{:utf16, :big}` | UTF-16 Big Endian |
+| `{:utf32, :little}` | UTF-32 Little Endian |
+| `{:utf32, :big}` | UTF-32 Big Endian |
 
 ## RFC 4180 Compliance
 
@@ -198,7 +222,8 @@ RustyCSV is **fully RFC 4180 compliant** and validated against industry-standard
 | [csv-test-data](https://github.com/sineemore/csv-test-data) | 17 | ✅ All pass |
 | Edge cases (PapaParse-inspired) | 53 | ✅ All pass |
 | Core + NimbleCSV compat | 36 | ✅ All pass |
-| **Total** | **127** | ✅ |
+| Encoding (UTF-16, Latin-1, etc.) | 20 | ✅ All pass |
+| **Total** | **147** | ✅ |
 
 See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for full compliance details.
 
@@ -293,7 +318,7 @@ mix deps.get
 # Compile (includes Rust NIF)
 mix compile
 
-# Run tests (127 tests)
+# Run tests (147 tests)
 mix test
 
 # Run benchmarks
