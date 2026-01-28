@@ -94,6 +94,7 @@ defmodule RustyCSV.Streaming do
 
   @default_chunk_size 64 * 1024
   @default_batch_size 1000
+  @min_buffer_size 64 * 1024
 
   # ==========================================================================
   # Public API
@@ -194,6 +195,11 @@ defmodule RustyCSV.Streaming do
     bom = Keyword.get(opts, :bom, "")
     trim_bom = Keyword.get(opts, :trim_bom, false)
 
+    # Optimize File.Stream: switch line-mode to binary chunk mode to avoid
+    # iterating 100K+ lines through Stream.transform (each line = 1 closure call).
+    # Binary chunks (~64KB each) reduce iterations from ~100K to ~100.
+    enumerable = optimize_file_stream(enumerable)
+
     # If encoding is not UTF-8, convert stream to UTF-8 first
     converted_enumerable =
       if encoding == :utf8 do
@@ -208,10 +214,36 @@ defmodule RustyCSV.Streaming do
         |> convert_stream_to_utf8(encoding)
       end
 
-    Stream.resource(
-      fn -> init_enum_stream(converted_enumerable, batch_size, separator, escape) end,
-      &next_rows_enum/1,
-      fn _state -> :ok end
+    parser = RustyCSV.Native.streaming_new_with_config(separator, escape)
+
+    Stream.transform(
+      converted_enumerable,
+      fn -> {[], 0} end,
+      fn chunk, {buf_chunks, buf_size} ->
+        chunk_binary = if is_binary(chunk), do: chunk, else: to_string(chunk)
+        new_buf_chunks = [chunk_binary | buf_chunks]
+        new_buf_size = buf_size + byte_size(chunk_binary)
+
+        if new_buf_size >= @min_buffer_size do
+          combined = new_buf_chunks |> Enum.reverse() |> IO.iodata_to_binary()
+          RustyCSV.Native.streaming_feed(parser, combined)
+          rows = RustyCSV.Native.streaming_next_rows(parser, batch_size)
+          {rows, {[], 0}}
+        else
+          {[], {new_buf_chunks, new_buf_size}}
+        end
+      end,
+      fn {buf_chunks, _buf_size} ->
+        unless buf_chunks == [] do
+          combined = buf_chunks |> Enum.reverse() |> IO.iodata_to_binary()
+          RustyCSV.Native.streaming_feed(parser, combined)
+        end
+
+        rows_from_buffer = RustyCSV.Native.streaming_next_rows(parser, 100_000)
+        final_rows = RustyCSV.Native.streaming_finalize(parser)
+        {rows_from_buffer ++ final_rows, {[], 0}}
+      end,
+      fn _acc -> :ok end
     )
   end
 
@@ -395,52 +427,6 @@ defmodule RustyCSV.Streaming do
     File.close(device)
   end
 
-  # ==========================================================================
-  # Enumerable Streaming (Private)
-  # ==========================================================================
-
-  defp init_enum_stream(enumerable, batch_size, separator, escape) do
-    parser = RustyCSV.Native.streaming_new_with_config(separator, escape)
-
-    iterator =
-      Enumerable.reduce(enumerable, {:cont, nil}, fn item, _acc -> {:suspend, item} end)
-
-    {:enum, iterator, parser, batch_size, enumerable}
-  end
-
-  defp next_rows_enum({:enum, {:suspended, chunk, continuation}, parser, batch_size, enum}) do
-    # Feed the suspended chunk
-    chunk_binary = if is_binary(chunk), do: chunk, else: to_string(chunk)
-    {_available, _buffer_size} = RustyCSV.Native.streaming_feed(parser, chunk_binary)
-
-    # Try to get rows
-    rows = RustyCSV.Native.streaming_next_rows(parser, batch_size)
-
-    # Get next chunk
-    next_iterator = continuation.({:cont, nil})
-
-    if rows == [] do
-      # No rows yet, continue reading
-      next_rows_enum({:enum, next_iterator, parser, batch_size, enum})
-    else
-      {rows, {:enum, next_iterator, parser, batch_size, enum}}
-    end
-  end
-
-  defp next_rows_enum({:enum, {:done, _}, parser, batch_size, enum}) do
-    # Enumerable exhausted, finalize
-    rows = RustyCSV.Native.streaming_finalize(parser)
-
-    if rows == [] do
-      {:halt, {:enum, {:done, nil}, parser, batch_size, enum}}
-    else
-      {rows, {:enum, {:done, nil}, parser, batch_size, enum}}
-    end
-  end
-
-  defp next_rows_enum({:enum, {:halted, _}, _parser, _batch_size, _enum} = state) do
-    {:halt, state}
-  end
 
   # ==========================================================================
   # Device Streaming (Private)
@@ -494,4 +480,14 @@ defmodule RustyCSV.Streaming do
 
   defp emit_rows([], state), do: next_rows_file(state)
   defp emit_rows(rows, state), do: {rows, state}
+
+  # Switch File.Stream from line mode to binary chunk mode.
+  # Line mode emits ~100K elements for a typical CSV; binary chunk mode emits ~100.
+  # This eliminates the dominant overhead: 100K Stream.transform closure calls.
+  defp optimize_file_stream(%File.Stream{line_or_bytes: :line} = stream) do
+    %{stream | line_or_bytes: @min_buffer_size}
+  end
+
+  defp optimize_file_stream(enumerable), do: enumerable
+
 end

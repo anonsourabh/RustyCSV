@@ -102,17 +102,15 @@ fn parse_row_cow_multi_sep<'a>(
             ));
             pos += 1;
             return (fields, pos);
-        } else if byte == b'\r' {
+        } else if byte == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
+            // CRLF: end of row. Bare \r is data per RFC 4180.
             fields.push(extract_field_cow_with_escape(
                 input,
                 field_start,
                 pos,
                 escape,
             ));
-            pos += 1;
-            if pos < input.len() && input[pos] == b'\n' {
-                pos += 1;
-            }
+            pos += 2;
             return (fields, pos);
         } else {
             pos += 1;
@@ -184,17 +182,15 @@ fn parse_row_cow_with_config(
             ));
             pos += 1;
             return (fields, pos);
-        } else if byte == b'\r' {
+        } else if byte == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
+            // CRLF: end of row. Bare \r is data per RFC 4180.
             fields.push(extract_field_cow_with_escape(
                 input,
                 field_start,
                 pos,
                 escape,
             ));
-            pos += 1;
-            if pos < input.len() && input[pos] == b'\n' {
-                pos += 1;
-            }
+            pos += 2;
             return (fields, pos);
         } else {
             pos += 1;

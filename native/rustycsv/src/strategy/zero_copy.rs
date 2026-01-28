@@ -101,23 +101,13 @@ fn parse_row_boundaries_multi_sep(
                 pos += 1;
                 field_start = pos;
             } else if byte == b'\n' {
-                // End of row
-                // Handle trailing \r before \n
-                let field_end = if pos > field_start && input[pos - 1] == b'\r' {
-                    pos - 1
-                } else {
-                    pos
-                };
-                boundaries.push((field_start, field_end));
-                return (boundaries, pos + 1);
-            } else if byte == b'\r' {
-                // Could be \r alone or \r\n
+                // End of row (standalone \n)
                 boundaries.push((field_start, pos));
-                pos += 1;
-                if pos < input.len() && input[pos] == b'\n' {
-                    pos += 1;
-                }
-                return (boundaries, pos);
+                return (boundaries, pos + 1);
+            } else if byte == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
+                // End of row (\r\n)
+                boundaries.push((field_start, pos));
+                return (boundaries, pos + 2);
             } else {
                 pos += 1;
             }
@@ -170,24 +160,14 @@ fn parse_row_boundaries(
                     field_start = pos;
                 }
                 b'\n' => {
-                    // End of row
-                    // Handle trailing \r before \n
-                    let field_end = if pos > field_start && input[pos - 1] == b'\r' {
-                        pos - 1
-                    } else {
-                        pos
-                    };
-                    boundaries.push((field_start, field_end));
+                    // End of row (standalone \n)
+                    boundaries.push((field_start, pos));
                     return (boundaries, pos + 1);
                 }
-                b'\r' => {
-                    // Could be \r alone or \r\n
+                b'\r' if pos + 1 < input.len() && input[pos + 1] == b'\n' => {
+                    // End of row (\r\n)
                     boundaries.push((field_start, pos));
-                    pos += 1;
-                    if pos < input.len() && input[pos] == b'\n' {
-                        pos += 1;
-                    }
-                    return (boundaries, pos);
+                    return (boundaries, pos + 2);
                 }
                 _ => {
                     pos += 1;

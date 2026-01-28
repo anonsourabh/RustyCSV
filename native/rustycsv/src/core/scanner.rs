@@ -77,13 +77,15 @@ pub fn find_row_starts_with_escape(input: &[u8], escape: u8) -> Vec<usize> {
                             }
                         }
                         b'\r' => {
-                            pos = found + 1;
-                            // Skip \n if CRLF
-                            if pos < input.len() && input[pos] == b'\n' {
-                                pos += 1;
-                            }
-                            if pos < input.len() {
-                                starts.push(pos);
+                            // Only treat \r as row boundary if followed by \n (CRLF).
+                            // Bare \r is data per RFC 4180.
+                            if found + 1 < input.len() && input[found + 1] == b'\n' {
+                                pos = found + 2;
+                                if pos < input.len() {
+                                    starts.push(pos);
+                                }
+                            } else {
+                                pos = found + 1;
                             }
                         }
                         _ => unreachable!(),

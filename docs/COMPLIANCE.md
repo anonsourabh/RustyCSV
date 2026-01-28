@@ -39,6 +39,15 @@ RustyCSV makes one practical concession shared by most CSV implementations:
 
 1. **Accepts LF line endings** - RFC 4180 specifies CRLF, but LF-only files are common on Unix systems. RustyCSV parses both.
 
+### Bare Carriage Return (`\r`)
+
+A bare `\r` not followed by `\n` is treated as field data, not a line ending. This matches:
+- The RFC 4180 ABNF grammar (bare `\r` is not in `TEXTDATA`, only valid inside quoted fields)
+- NimbleCSV (only `\r\n` and `\n` are line endings)
+- Go `encoding/csv`, Ruby CSV, PostgreSQL COPY
+
+Python's `csv` module differs — it treats bare `\r` as a line ending via universal newline handling.
+
 ---
 
 ## Industry Test Suites
@@ -159,6 +168,7 @@ RustyCSV is designed as a drop-in replacement for NimbleCSV. Compatibility is ve
 1. **API compatibility tests** - All NimbleCSV API functions work identically
 2. **Output matching** - `dump_to_iodata/1` produces identical output to NimbleCSV
 3. **Round-trip tests** - Parse → dump → parse produces identical data
+4. **Full-file validation** - 100K-row CSV parsed through both libraries produces identical row-by-row output
 
 **Test file:** `test/nimble_csv_compat_test.exs`
 
@@ -170,6 +180,27 @@ test "dump output matches NimbleCSV" do
          NimbleCSV.RFC4180.dump_to_iodata(data)
 end
 ```
+
+### Known Behavioral Differences
+
+Any input NimbleCSV accepts, RustyCSV also accepts with identical output. Two edge cases differ:
+
+**1. Unquoted fields containing double-quote characters**
+
+Input: ` "a",b\n` (space before quote)
+
+| Parser | Behavior |
+|--------|----------|
+| NimbleCSV | Raises `ParseError` |
+| RustyCSV | Parses as `[" \"a\"", "b"]` |
+
+Both behaviors are defensible for malformed input. NimbleCSV treats any `"` as significant. RustyCSV treats a field as quoted only if it starts with the escape character, matching Python's `csv` module and Go's `encoding/csv` (with `LazyQuotes`).
+
+**2. `parse_stream/2` with non-line-delimited chunks**
+
+The two libraries use different streaming architectures. NimbleCSV's `parse_stream` expects each element of the input enumerable to be a complete line. RustyCSV's streaming parser accepts arbitrary chunk boundaries because the Rust NIF maintains parse state across `feed()` calls.
+
+This difference is invisible for the standard use case (`File.stream! |> parse_stream`), where both produce identical output. It only surfaces when manually constructing a stream of non-line-delimited binary chunks.
 
 ---
 

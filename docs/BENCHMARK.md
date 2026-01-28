@@ -127,25 +127,22 @@ We measure three metrics:
 
 ## Streaming Comparison
 
-**File:** 6.82 MB (100K rows)
+**File:** 6.5 MB (100K rows)
 
-### Fair Comparison (Both Line-Based)
+### `File.stream!` Input (`parse_stream/2`)
 
-| Parser | Mode | Rows | Time | Correct |
-|--------|------|------|------|---------|
-| RustyCSV | line-based | 100,000 | 92.5ms | ✅ |
-| NimbleCSV | line-based | 100,000 | 88.5ms | ✅ |
+|                       | p10     | median  | p90     | min     | max     |
+|-----------------------|---------|---------|---------|---------|---------|
+| RustyCSV streaming    | 46.8ms  | 47.7ms  | 48.9ms  | 46.6ms  | 49.0ms  |
+| NimbleCSV streaming   | 69.3ms  | 69.9ms  | 70.5ms  | 68.3ms  | 71.0ms  |
 
-**Result:** NimbleCSV is **1.04x faster** for line-based streaming.
+**Result:** RustyCSV is **1.5x faster** (22ms saved at median).
 
-### RustyCSV Unique Capability
+RustyCSV automatically detects `File.Stream` in line mode and switches to 64KB binary chunk reads, reducing stream iterations from ~100K (one per line) to ~100. The Rust NIF handles arbitrary chunk boundaries internally, so it can operate on raw binary chunks rather than pre-split lines.
 
-| Parser | Mode | Rows | Time | Correct |
-|--------|------|------|------|---------|
-| RustyCSV | 64KB binary chunks | 100,000 | 292.5ms | ✅ |
-| NimbleCSV | 64KB binary chunks | N/A | N/A | ❌ Requires lines |
+### Arbitrary Binary Chunks
 
-**Key insight:** RustyCSV can process arbitrary binary chunks (useful for network streams, compressed data, etc.). NimbleCSV requires line-delimited input. This is a capability difference, not a speed difference.
+RustyCSV can also process arbitrary binary chunks directly (useful for network streams, compressed data, etc.). NimbleCSV's `parse_stream` operates on line-delimited input, which is the standard approach when using `File.stream!/1`.
 
 ## Real-World Benchmark: Amazon Settlement Reports
 
@@ -192,6 +189,7 @@ This section presents results from parsing Amazon SP-API settlement reports in T
 | Mixed CSV | `:zero_copy` | 4.3x |
 | Large CSV (7MB) | `:zero_copy` | 9.2x |
 | Very Large CSV (108MB) | `:zero_copy` | 8.6x |
+| Streaming (6.5MB) | `parse_stream/2` | 1.5x |
 | Real-world TSV | `:simd` | 1.1-1.3x |
 
 ### Strategy Selection Guide
@@ -217,7 +215,7 @@ This section presents results from parsing Amazon SP-API settlement reports in T
 
 5. **`:parallel` has significant overhead** - Not beneficial until 500MB+ files with complex data
 
-6. **Streaming is a capability difference** - RustyCSV handles binary chunks; NimbleCSV requires lines. Speed is comparable for line-based streams.
+6. **Streaming is 1.5x faster** - RustyCSV auto-optimizes `File.Stream` to binary chunk mode, reducing iterations from ~100K lines to ~100 chunks. Also supports arbitrary binary chunks for non-file streams.
 
 7. **Real-world vs synthetic** - Synthetic benchmarks show 3-18x gains; real-world TSV shows 13-28% gains due to simpler data patterns.
 

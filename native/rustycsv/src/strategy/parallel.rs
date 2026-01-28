@@ -40,11 +40,13 @@ pub fn parse_csv_parallel_with_config(
     row_ranges
         .into_par_iter()
         .filter_map(|(start, end)| {
-            // Find actual line end (strip trailing newlines)
+            // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
             let mut line_end = end;
-            while line_end > start && (input[line_end - 1] == b'\n' || input[line_end - 1] == b'\r')
-            {
+            if line_end > start && input[line_end - 1] == b'\n' {
                 line_end -= 1;
+                if line_end > start && input[line_end - 1] == b'\r' {
+                    line_end -= 1;
+                }
             }
 
             if line_end <= start {
@@ -95,11 +97,13 @@ pub fn parse_csv_parallel_multi_sep(
     row_ranges
         .into_par_iter()
         .filter_map(|(start, end)| {
-            // Find actual line end (strip trailing newlines)
+            // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
             let mut line_end = end;
-            while line_end > start && (input[line_end - 1] == b'\n' || input[line_end - 1] == b'\r')
-            {
+            if line_end > start && input[line_end - 1] == b'\n' {
                 line_end -= 1;
+                if line_end > start && input[line_end - 1] == b'\r' {
+                    line_end -= 1;
+                }
             }
 
             if line_end <= start {

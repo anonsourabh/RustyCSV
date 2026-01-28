@@ -822,30 +822,44 @@ defmodule RustyCSV do
       @impl RustyCSV
       @spec to_line_stream(Enumerable.t()) :: Enumerable.t()
       def to_line_stream(stream) do
-        Stream.transform(
-          stream,
-          fn -> "" end,
-          fn chunk, acc ->
-            combined = acc <> chunk
+        newline = :binary.compile_pattern(@newlines)
 
-            case String.split(combined, @newlines, trim: false) do
-              [] ->
-                {[], ""}
-
-              [partial] ->
-                {[], partial}
-
-              parts ->
-                {complete, [last]} = Enum.split(parts, -1)
-                {complete, last}
-            end
+        stream
+        |> Stream.chunk_while(
+          "",
+          fn element, acc ->
+            to_try = acc <> element
+            {elements, new_acc} = chunk_by_newline(to_try, newline, [], {0, byte_size(to_try)})
+            {:cont, elements, new_acc}
           end,
           fn
-            "" -> {[], ""}
-            acc -> {[acc], ""}
-          end,
-          fn _acc -> :ok end
+            "" -> {:cont, []}
+            acc -> {:cont, [acc], []}
+          end
         )
+        |> Stream.concat()
+      end
+
+      defp chunk_by_newline(_string, _newline, elements, {_offset, 0}) do
+        {Enum.reverse(elements), ""}
+      end
+
+      defp chunk_by_newline(string, newline, elements, {offset, length}) do
+        case :binary.match(string, newline, scope: {offset, length}) do
+          {newline_offset, newline_length} ->
+            difference = newline_length + newline_offset - offset
+            element = binary_part(string, offset, difference)
+
+            chunk_by_newline(
+              string,
+              newline,
+              [element | elements],
+              {newline_offset + newline_length, length - difference}
+            )
+
+          :nomatch ->
+            {Enum.reverse(elements), binary_part(string, offset, length)}
+        end
       end
     end
   end

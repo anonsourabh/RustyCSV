@@ -102,19 +102,28 @@ impl StreamingParser {
                 // Reset quote state for next row
                 self.in_quotes = false;
             } else if byte == b'\r' {
-                // Found end of row (CRLF or just CR)
-                let row_end = pos;
-                let row = self.parse_row_owned(self.partial_row_start, row_end);
-                if !row.is_empty() {
-                    self.complete_rows.push(row);
+                // Only treat \r as line ending when followed by \n (CRLF).
+                // Bare \r is data per RFC 4180 and NimbleCSV behavior.
+                if pos + 1 < self.buffer.len() {
+                    if self.buffer[pos + 1] == b'\n' {
+                        // CRLF: end of row
+                        let row_end = pos;
+                        let row = self.parse_row_owned(self.partial_row_start, row_end);
+                        if !row.is_empty() {
+                            self.complete_rows.push(row);
+                        }
+                        pos += 2; // skip \r\n
+                        self.partial_row_start = pos;
+                        self.in_quotes = false;
+                    } else {
+                        // Bare \r followed by non-\n: treat as data
+                        pos += 1;
+                    }
+                } else {
+                    // \r at end of buffer: can't tell if \n follows.
+                    // Stop scanning here; next feed() will resolve it.
+                    break;
                 }
-                pos += 1;
-                if pos < self.buffer.len() && self.buffer[pos] == b'\n' {
-                    pos += 1;
-                }
-                self.partial_row_start = pos;
-                // Reset quote state for next row
-                self.in_quotes = false;
             } else {
                 pos += 1;
             }
@@ -369,5 +378,45 @@ mod tests {
             rows[0],
             vec![b"a".to_vec(), b"line1\nline2".to_vec(), b"c".to_vec()]
         );
+    }
+
+    #[test]
+    fn test_streaming_bare_cr_is_data() {
+        // Bare \r (not followed by \n) is data, not a line ending per RFC 4180
+        let mut parser = StreamingParser::new();
+        parser.feed(b"a\rb\n");
+
+        let rows = parser.take_rows(10);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], vec![b"a\rb".to_vec()]);
+    }
+
+    #[test]
+    fn test_streaming_bare_cr_at_chunk_boundary() {
+        // \r at end of chunk, \n at start of next chunk = CRLF line ending
+        let mut parser = StreamingParser::new();
+        parser.feed(b"a,b\r");
+        assert_eq!(parser.available_rows(), 0); // Can't tell yet
+
+        parser.feed(b"\nc,d\n");
+        assert_eq!(parser.available_rows(), 2);
+
+        let rows = parser.take_rows(10);
+        assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec()]);
+        assert_eq!(rows[1], vec![b"c".to_vec(), b"d".to_vec()]);
+    }
+
+    #[test]
+    fn test_streaming_bare_cr_at_chunk_boundary_not_crlf() {
+        // \r at end of chunk, next chunk starts with non-\n = bare \r is data
+        let mut parser = StreamingParser::new();
+        parser.feed(b"a\r");
+        assert_eq!(parser.available_rows(), 0);
+
+        parser.feed(b"b\n");
+        assert_eq!(parser.available_rows(), 1);
+
+        let rows = parser.take_rows(10);
+        assert_eq!(rows[0], vec![b"a\rb".to_vec()]);
     }
 }

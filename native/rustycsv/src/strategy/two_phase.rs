@@ -84,15 +84,12 @@ fn parse_row_index_with_config(
             });
             pos += 1;
             return (fields, pos);
-        } else if byte == b'\r' {
+        } else if byte == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
             fields.push(FieldBound {
                 start: field_start,
                 end: pos,
             });
-            pos += 1;
-            if pos < input.len() && input[pos] == b'\n' {
-                pos += 1;
-            }
+            pos += 2;
             return (fields, pos);
         } else {
             pos += 1;
@@ -262,15 +259,12 @@ fn parse_row_index_multi_sep(
             });
             pos += 1;
             return (fields, pos);
-        } else if byte == b'\r' {
+        } else if byte == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
             fields.push(FieldBound {
                 start: field_start,
                 end: pos,
             });
-            pos += 1;
-            if pos < input.len() && input[pos] == b'\n' {
-                pos += 1;
-            }
+            pos += 2;
             return (fields, pos);
         } else {
             pos += 1;

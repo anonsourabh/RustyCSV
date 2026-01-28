@@ -1,0 +1,11 @@
+%{
+  "benchee": {:hex, :benchee, "1.5.0", "4d812c31d54b0ec0167e91278e7de3f596324a78a096fd3d0bea68bb0c513b10", [:mix], [{:deep_merge, "~> 1.0", [hex: :deep_merge, repo: "hexpm", optional: false]}, {:statistex, "~> 1.1", [hex: :statistex, repo: "hexpm", optional: false]}, {:table, "~> 0.1.0", [hex: :table, repo: "hexpm", optional: true]}], "hexpm", "5b075393aea81b8ae74eadd1c28b1d87e8a63696c649d8293db7c4df3eb67535"},
+  "castore": {:hex, :castore, "1.0.17", "4f9770d2d45fbd91dcf6bd404cf64e7e58fed04fadda0923dc32acca0badffa2", [:mix], [], "hexpm", "12d24b9d80b910dd3953e165636d68f147a31db945d2dcb9365e441f8b5351e5"},
+  "csv": {:hex, :csv, "3.2.2", "452f96414b39a176b7c390af6d8b78f15130dc6167fe3b836729131f515d843e", [:mix], [], "hexpm", "cbf256ff74a3fa01d9ec420d07b19c90d410ed9fe5b6d6e1bc7662edf35bc574"},
+  "deep_merge": {:hex, :deep_merge, "1.0.0", "b4aa1a0d1acac393bdf38b2291af38cb1d4a52806cf7a4906f718e1feb5ee961", [:mix], [], "hexpm", "ce708e5f094b9cd4e8f2be4f00d2f4250c4095be93f8cd6d018c753894885430"},
+  "jason": {:hex, :jason, "1.4.4", "b9226785a9aa77b6857ca22832cffa5d5011a667207eb2a0ad56adb5db443b8a", [:mix], [{:decimal, "~> 1.0 or ~> 2.0", [hex: :decimal, repo: "hexpm", optional: true]}], "hexpm", "c5eb0cab91f094599f94d55bc63409236a8ec69a21a67814529e8d5f6cc90b3b"},
+  "nimble_csv": {:hex, :nimble_csv, "1.3.0", "b7f998dc62b222bce9596e46f028c7a5af04cb5dde6df2ea197c583227c54971", [:mix], [], "hexpm", "41ccdc18f7c8f8bb06e84164fc51635321e80d5a3b450761c4997d620925d619"},
+  "rustler": {:hex, :rustler, "0.37.1", "721434020c7f6f8e1cdc57f44f75c490435b01de96384f8ccb96043f12e8a7e0", [:mix], [{:jason, "~> 1.0", [hex: :jason, repo: "hexpm", optional: false]}], "hexpm", "24547e9b8640cf00e6a2071acb710f3e12ce0346692e45098d84d45cdb54fd79"},
+  "rustler_precompiled": {:hex, :rustler_precompiled, "0.8.4", "700a878312acfac79fb6c572bb8b57f5aae05fe1cf70d34b5974850bbf2c05bf", [:mix], [{:castore, "~> 0.1 or ~> 1.0", [hex: :castore, repo: "hexpm", optional: false]}, {:rustler, "~> 0.23", [hex: :rustler, repo: "hexpm", optional: true]}], "hexpm", "3b33d99b540b15f142ba47944f7a163a25069f6d608783c321029bc1ffb09514"},
+  "statistex": {:hex, :statistex, "1.1.0", "7fec1eb2f580a0d2c1a05ed27396a084ab064a40cfc84246dbfb0c72a5c761e5", [:mix], [], "hexpm", "f5950ea26ad43246ba2cce54324ac394a4e7408fdcf98b8e230f503a0cba9cf5"},
+}

@@ -242,10 +242,10 @@ defmodule NimbleCSVCompatTest do
       ]
 
       assert [
-               "name,last,year",
-               "john,doe,1986",
-               "jane,doe,1987",
-               "james,doe,1992",
+               "name,last,year\n",
+               "john,doe,1986\n",
+               "jane,doe,1987\n",
+               "james,doe,1992\n",
                "ryan,doe,1893"
              ] = CSV.to_line_stream(stream) |> Enum.into([])
     end

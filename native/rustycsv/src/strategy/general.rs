@@ -161,12 +161,10 @@ fn parse_row_general<'a>(
             fields.push(extract_field_cow_general(input, field_start, pos, escape));
             pos += 1;
             return (fields, pos);
-        } else if input[pos] == b'\r' {
+        } else if input[pos] == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
+            // CRLF: end of row. Bare \r is data per RFC 4180.
             fields.push(extract_field_cow_general(input, field_start, pos, escape));
-            pos += 1;
-            if pos < input.len() && input[pos] == b'\n' {
-                pos += 1;
-            }
+            pos += 2;
             return (fields, pos);
         } else {
             pos += 1;
@@ -253,15 +251,13 @@ fn index_row_general(
             });
             pos += 1;
             return (fields, pos);
-        } else if input[pos] == b'\r' {
+        } else if input[pos] == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
+            // CRLF: end of row. Bare \r is data per RFC 4180.
             fields.push(GeneralFieldBound {
                 start: field_start,
                 end: pos,
             });
-            pos += 1;
-            if pos < input.len() && input[pos] == b'\n' {
-                pos += 1;
-            }
+            pos += 2;
             return (fields, pos);
         } else {
             pos += 1;
@@ -329,11 +325,9 @@ pub fn find_row_starts_general(input: &[u8], escape: &[u8]) -> Vec<usize> {
             if pos < input.len() {
                 starts.push(pos);
             }
-        } else if input[pos] == b'\r' {
-            pos += 1;
-            if pos < input.len() && input[pos] == b'\n' {
-                pos += 1;
-            }
+        } else if input[pos] == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
+            // CRLF: end of row. Bare \r is data per RFC 4180.
+            pos += 2;
             if pos < input.len() {
                 starts.push(pos);
             }
@@ -413,11 +407,13 @@ pub fn parse_csv_parallel_general(
     row_ranges
         .into_par_iter()
         .filter_map(|(start, end)| {
+            // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
             let mut line_end = end;
-            while line_end > start
-                && (input[line_end - 1] == b'\n' || input[line_end - 1] == b'\r')
-            {
+            if line_end > start && input[line_end - 1] == b'\n' {
                 line_end -= 1;
+                if line_end > start && input[line_end - 1] == b'\r' {
+                    line_end -= 1;
+                }
             }
 
             if line_end <= start {
@@ -500,13 +496,10 @@ fn parse_row_boundaries_general(
             };
             boundaries.push((field_start, field_end));
             return (boundaries, pos + 1);
-        } else if input[pos] == b'\r' {
+        } else if input[pos] == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
+            // CRLF: end of row. Bare \r is data per RFC 4180.
             boundaries.push((field_start, pos));
-            pos += 1;
-            if pos < input.len() && input[pos] == b'\n' {
-                pos += 1;
-            }
-            return (boundaries, pos);
+            return (boundaries, pos + 2);
         } else {
             pos += 1;
         }
@@ -582,17 +575,24 @@ impl GeneralStreamingParser {
                 self.partial_row_start = pos;
                 self.in_quotes = false;
             } else if self.buffer[pos] == b'\r' {
-                let row_end = pos;
-                let row = self.parse_row_owned(self.partial_row_start, row_end);
-                if !row.is_empty() {
-                    self.complete_rows.push(row);
+                // Only treat \r as line ending when followed by \n (CRLF).
+                // Bare \r is data per RFC 4180 and NimbleCSV behavior.
+                if pos + 1 < self.buffer.len() {
+                    if self.buffer[pos + 1] == b'\n' {
+                        let row_end = pos;
+                        let row = self.parse_row_owned(self.partial_row_start, row_end);
+                        if !row.is_empty() {
+                            self.complete_rows.push(row);
+                        }
+                        pos += 2;
+                        self.partial_row_start = pos;
+                        self.in_quotes = false;
+                    } else {
+                        pos += 1;
+                    }
+                } else {
+                    break;
                 }
-                pos += 1;
-                if pos < self.buffer.len() && self.buffer[pos] == b'\n' {
-                    pos += 1;
-                }
-                self.partial_row_start = pos;
-                self.in_quotes = false;
             } else {
                 pos += 1;
             }
