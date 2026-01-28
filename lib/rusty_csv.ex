@@ -711,6 +711,8 @@ defmodule RustyCSV do
   defp quoted_parse_string_function(config) do
     [
       quoted_parse_string_main(config.encoding),
+      quoted_parse_string_headers_clauses(),
+      quoted_parse_to_maps_clauses(),
       quoted_maybe_trim_bom(config.trim_bom),
       quoted_maybe_to_utf8(config.encoding),
       quoted_do_parse_string_clauses()
@@ -746,40 +748,44 @@ defmodule RustyCSV do
 
       def parse_string(string, opts) when is_binary(string) and is_list(opts) do
         headers = Keyword.get(opts, :headers, false)
+        strategy = Keyword.get(opts, :strategy, @default_strategy)
+        string = string |> maybe_trim_bom() |> maybe_to_utf8()
+        do_parse_string_with_headers(string, strategy, headers, opts)
+      end
+    end
+  end
 
-        case headers do
-          false ->
-            # Existing path — COMPLETELY UNCHANGED
-            strategy = Keyword.get(opts, :strategy, @default_strategy)
-            skip_headers = Keyword.get(opts, :skip_headers, true)
+  defp quoted_parse_string_headers_clauses do
+    quote do
+      defp do_parse_string_with_headers(string, strategy, false, opts) do
+        skip_headers = Keyword.get(opts, :skip_headers, true)
+        rows = do_parse_string(string, strategy)
 
-            string = string |> maybe_trim_bom() |> maybe_to_utf8()
-            rows = do_parse_string(string, strategy)
-
-            case {skip_headers, rows} do
-              {true, [_ | tail]} -> tail
-              _ -> rows
-            end
-
-          true ->
-            # First row = keys, Rust interning
-            strategy = Keyword.get(opts, :strategy, @default_strategy)
-            string = string |> maybe_trim_bom() |> maybe_to_utf8()
-            do_parse_to_maps(string, strategy, true, true)
-
-          header_list when is_list(header_list) ->
-            # Explicit keys
-            strategy = Keyword.get(opts, :strategy, @default_strategy)
-            skip_headers = Keyword.get(opts, :skip_headers, true)
-            string = string |> maybe_trim_bom() |> maybe_to_utf8()
-            do_parse_to_maps(string, strategy, header_list, skip_headers)
-
-          other ->
-            raise ArgumentError,
-                  "invalid :headers option, expected false, true, or a list of keys, got: #{inspect(other)}"
+        case {skip_headers, rows} do
+          {true, [_ | tail]} -> tail
+          _ -> rows
         end
       end
 
+      defp do_parse_string_with_headers(string, strategy, true, _opts) do
+        do_parse_to_maps(string, strategy, true, true)
+      end
+
+      defp do_parse_string_with_headers(string, strategy, header_list, opts)
+           when is_list(header_list) do
+        skip_headers = Keyword.get(opts, :skip_headers, true)
+        do_parse_to_maps(string, strategy, header_list, skip_headers)
+      end
+
+      defp do_parse_string_with_headers(_string, _strategy, other, _opts) do
+        raise ArgumentError,
+              "invalid :headers option, expected false, true, or a list of keys, got: #{inspect(other)}"
+      end
+    end
+  end
+
+  defp quoted_parse_to_maps_clauses do
+    quote do
       defp do_parse_to_maps(string, :parallel, header_mode, skip_first) do
         RustyCSV.Native.parse_to_maps_parallel(
           string,
@@ -858,20 +864,40 @@ defmodule RustyCSV do
       end
 
       defp do_parse_string(string, :indexed) do
-        RustyCSV.Native.parse_string_indexed_with_config(string, @separator_binaries, @escape_binary)
+        RustyCSV.Native.parse_string_indexed_with_config(
+          string,
+          @separator_binaries,
+          @escape_binary
+        )
       end
 
       defp do_parse_string(string, :parallel) do
-        RustyCSV.Native.parse_string_parallel_with_config(string, @separator_binaries, @escape_binary)
+        RustyCSV.Native.parse_string_parallel_with_config(
+          string,
+          @separator_binaries,
+          @escape_binary
+        )
       end
 
       defp do_parse_string(string, :zero_copy) do
-        RustyCSV.Native.parse_string_zero_copy_with_config(string, @separator_binaries, @escape_binary)
+        RustyCSV.Native.parse_string_zero_copy_with_config(
+          string,
+          @separator_binaries,
+          @escape_binary
+        )
       end
     end
   end
 
   defp quoted_parse_stream_function do
+    [
+      quoted_parse_stream_main(),
+      quoted_stream_headers_clauses(),
+      quoted_zip_to_map()
+    ]
+  end
+
+  defp quoted_parse_stream_main do
     quote do
       @doc """
       Lazily parses a stream of CSV data into a stream of rows.
@@ -895,7 +921,6 @@ defmodule RustyCSV do
 
       def parse_stream(stream, opts) when is_list(opts) do
         headers = Keyword.get(opts, :headers, false)
-        skip_headers = Keyword.get(opts, :skip_headers, true)
         chunk_size = Keyword.get(opts, :chunk_size, 64 * 1024)
         batch_size = Keyword.get(opts, :batch_size, 1000)
 
@@ -910,36 +935,47 @@ defmodule RustyCSV do
             trim_bom: @trim_bom
           )
 
-        case headers do
-          false ->
-            if skip_headers do
-              Stream.drop(result_stream, 1)
-            else
-              result_stream
-            end
+        do_stream_with_headers(result_stream, headers, opts)
+      end
+    end
+  end
 
-          true ->
-            # First row = keys, convert remaining to maps
-            Stream.transform(result_stream, :no_header, fn
-              row, :no_header ->
-                {[], {:header, row, length(row)}}
-
-              row, {:header, _keys, _num_keys} = state ->
-                {[zip_to_map(state, row)], state}
-            end)
-
-          header_list when is_list(header_list) ->
-            num_keys = length(header_list)
-            state = {:header, header_list, num_keys}
-            base = if skip_headers, do: Stream.drop(result_stream, 1), else: result_stream
-            Stream.map(base, &zip_to_map(state, &1))
-
-          other ->
-            raise ArgumentError,
-                  "invalid :headers option, expected false, true, or a list of keys, got: #{inspect(other)}"
+  defp quoted_stream_headers_clauses do
+    quote do
+      defp do_stream_with_headers(stream, false, opts) do
+        if Keyword.get(opts, :skip_headers, true) do
+          Stream.drop(stream, 1)
+        else
+          stream
         end
       end
 
+      defp do_stream_with_headers(stream, true, _opts) do
+        Stream.transform(stream, :no_header, fn
+          row, :no_header ->
+            {[], {:header, row, length(row)}}
+
+          row, {:header, _keys, _num_keys} = state ->
+            {[zip_to_map(state, row)], state}
+        end)
+      end
+
+      defp do_stream_with_headers(stream, header_list, opts) when is_list(header_list) do
+        num_keys = length(header_list)
+        state = {:header, header_list, num_keys}
+        base = if Keyword.get(opts, :skip_headers, true), do: Stream.drop(stream, 1), else: stream
+        Stream.map(base, &zip_to_map(state, &1))
+      end
+
+      defp do_stream_with_headers(_stream, other, _opts) do
+        raise ArgumentError,
+              "invalid :headers option, expected false, true, or a list of keys, got: #{inspect(other)}"
+      end
+    end
+  end
+
+  defp quoted_zip_to_map do
+    quote do
       defp zip_to_map({:header, keys, num_keys}, row) do
         row_len = length(row)
 

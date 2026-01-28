@@ -2,6 +2,9 @@ defmodule RustyCSV.HeadersTest do
   use ExUnit.Case, async: true
 
   alias RustyCSV.RFC4180, as: CSV
+  alias RustyCSV.TestHeaders.FlexSep
+  alias RustyCSV.TestHeaders.MultiEsc
+  alias RustyCSV.TestHeaders.MultiSep
 
   @strategies [:basic, :simd, :indexed, :parallel, :zero_copy]
 
@@ -21,7 +24,8 @@ defmodule RustyCSV.HeadersTest do
       {"crlf", "a,b\r\njohn,27\r\njane,30\r\n"},
       {"mixed line endings", "a,b\r\n1,2\n3,4\r\n"},
       {"duplicate headers", "a,a\n1,2\n"},
-      {"many rows", Enum.join(["h1,h2,h3" | Enum.map(1..100, &"a#{&1},b#{&1},c#{&1}")], "\n") <> "\n"}
+      {"many rows",
+       Enum.join(["h1,h2,h3" | Enum.map(1..100, &"a#{&1},b#{&1},c#{&1}")], "\n") <> "\n"}
     ]
 
     for {label, _input} <- @inputs do
@@ -251,7 +255,7 @@ defmodule RustyCSV.HeadersTest do
       @tag strategy: strategy
       test "quoted headers (#{strategy})" do
         result =
-          CSV.parse_string("\"name\",\"age\"\njohn,27\n",
+          CSV.parse_string(~s("name","age"\njohn,27\n),
             headers: true,
             strategy: unquote(strategy)
           )
@@ -262,7 +266,7 @@ defmodule RustyCSV.HeadersTest do
       @tag strategy: strategy
       test "headers with escaped quotes (#{strategy})" do
         result =
-          CSV.parse_string("\"na\"\"me\",age\njohn,27\n",
+          CSV.parse_string(~s("na""me",age\njohn,27\n),
             headers: true,
             strategy: unquote(strategy)
           )
@@ -293,7 +297,7 @@ defmodule RustyCSV.HeadersTest do
     end
 
     test "quoted data values in maps" do
-      result = CSV.parse_string("a,b\n\"hello, world\",\"line1\nline2\"\n", headers: true)
+      result = CSV.parse_string(~s(a,b\n"hello, world","line1\nline2"\n), headers: true)
       assert result == [%{"a" => "hello, world", "b" => "line1\nline2"}]
     end
 
@@ -480,14 +484,14 @@ defmodule RustyCSV.HeadersTest do
   describe "custom parser with multi-byte separator" do
     test "headers: true with :: separator" do
       result =
-        RustyCSV.TestHeaders.MultiSep.parse_string("name::age\njohn::27\n", headers: true)
+        MultiSep.parse_string("name::age\njohn::27\n", headers: true)
 
       assert result == [%{"name" => "john", "age" => "27"}]
     end
 
     test "headers: [atoms] with :: separator" do
       result =
-        RustyCSV.TestHeaders.MultiSep.parse_string("name::age\njohn::27\n",
+        MultiSep.parse_string("name::age\njohn::27\n",
           headers: [:n, :a]
         )
 
@@ -498,7 +502,7 @@ defmodule RustyCSV.HeadersTest do
   describe "custom parser with multi-separator" do
     test "headers: true with multiple separators" do
       result =
-        RustyCSV.TestHeaders.FlexSep.parse_string("name,age\njohn;27\n", headers: true)
+        FlexSep.parse_string("name,age\njohn;27\n", headers: true)
 
       assert result == [%{"name" => "john", "age" => "27"}]
     end
@@ -507,14 +511,14 @@ defmodule RustyCSV.HeadersTest do
   describe "custom parser with multi-byte escape" do
     test "headers: true with $$ escape" do
       result =
-        RustyCSV.TestHeaders.MultiEsc.parse_string("$$name$$,age\njohn,27\n", headers: true)
+        MultiEsc.parse_string("$$name$$,age\njohn,27\n", headers: true)
 
       assert result == [%{"name" => "john", "age" => "27"}]
     end
 
     test "escaped $$ in header value" do
       result =
-        RustyCSV.TestHeaders.MultiEsc.parse_string("$$na$$$$me$$,age\njohn,27\n",
+        MultiEsc.parse_string("$$na$$$$me$$,age\njohn,27\n",
           headers: true
         )
 

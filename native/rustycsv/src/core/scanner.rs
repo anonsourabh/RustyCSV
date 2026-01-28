@@ -157,4 +157,3 @@ pub fn is_separator(byte: u8, separators: &[u8]) -> bool {
         _ => separators.contains(&byte),
     }
 }
-

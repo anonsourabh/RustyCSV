@@ -1,6 +1,9 @@
 // Field extraction and quote handling
 
-use super::scanner::{find_next_comma, find_next_delimiter, find_next_separator, is_separator, line_has_escape, line_has_quotes};
+use super::scanner::{
+    find_next_comma, find_next_delimiter, find_next_separator, is_separator, line_has_escape,
+    line_has_quotes,
+};
 use std::borrow::Cow;
 
 /// Extract a field from input, stripping surrounding quotes and unescaping doubled quotes.
@@ -293,7 +296,11 @@ pub fn parse_line_fields_owned_with_config(line: &[u8], separator: u8, escape: u
 }
 
 /// Parse a line into owned fields with multiple separator support
-pub fn parse_line_fields_owned_multi_sep(line: &[u8], separators: &[u8], escape: u8) -> Vec<Vec<u8>> {
+pub fn parse_line_fields_owned_multi_sep(
+    line: &[u8],
+    separators: &[u8],
+    escape: u8,
+) -> Vec<Vec<u8>> {
     // Optimize for single separator case
     if separators.len() == 1 {
         return parse_line_fields_owned_with_config(line, separators[0], escape);

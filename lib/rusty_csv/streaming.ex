@@ -427,7 +427,6 @@ defmodule RustyCSV.Streaming do
     File.close(device)
   end
 
-
   # ==========================================================================
   # Device Streaming (Private)
   # ==========================================================================
@@ -489,5 +488,4 @@ defmodule RustyCSV.Streaming do
   end
 
   defp optimize_file_stream(enumerable), do: enumerable
-
 end

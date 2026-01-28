@@ -87,9 +87,9 @@ impl StreamingParserResource {
 
     pub fn with_general(separators: Vec<Vec<u8>>, escape: Vec<u8>) -> Self {
         StreamingParserResource {
-            inner: Mutex::new(StreamingParserEnum::General(
-                GeneralStreamingParser::new(separators, escape),
-            )),
+            inner: Mutex::new(StreamingParserEnum::General(GeneralStreamingParser::new(
+                separators, escape,
+            ))),
         }
     }
 }

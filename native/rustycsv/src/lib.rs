@@ -61,9 +61,7 @@ fn decode_separators<'a>(term: Term<'a>) -> NifResult<Separators> {
 /// Accepts: integer 34 or binary <<34>> or binary <<36,36>>
 fn decode_escape<'a>(term: Term<'a>) -> NifResult<Escape> {
     if let Ok(byte) = term.decode::<u8>() {
-        return Ok(Escape {
-            bytes: vec![byte],
-        });
+        return Ok(Escape { bytes: vec![byte] });
     }
     if let Ok(binary) = term.decode::<Binary<'a>>() {
         let slice = binary.as_slice();
@@ -91,11 +89,10 @@ use resource::{StreamingParserRef, StreamingParserResource};
 use strategy::{
     contains_escape, parse_csv, parse_csv_boundaries_general, parse_csv_boundaries_multi_sep,
     parse_csv_boundaries_with_config, parse_csv_fast, parse_csv_fast_multi_sep,
-    parse_csv_fast_with_config, parse_csv_general, parse_csv_indexed,
-    parse_csv_indexed_general, parse_csv_indexed_multi_sep, parse_csv_indexed_with_config,
-    parse_csv_multi_sep, parse_csv_parallel, parse_csv_parallel_general,
-    parse_csv_parallel_multi_sep, parse_csv_parallel_with_config, parse_csv_with_config,
-    unescape_field_general,
+    parse_csv_fast_with_config, parse_csv_general, parse_csv_indexed, parse_csv_indexed_general,
+    parse_csv_indexed_multi_sep, parse_csv_indexed_with_config, parse_csv_multi_sep,
+    parse_csv_parallel, parse_csv_parallel_general, parse_csv_parallel_multi_sep,
+    parse_csv_parallel_with_config, parse_csv_with_config, unescape_field_general,
 };
 use term::{
     boundaries_to_maps_hybrid, boundaries_to_maps_hybrid_general, boundaries_to_term_hybrid,
@@ -338,7 +335,10 @@ fn streaming_new() -> StreamingParserRef {
 
 /// Create a new streaming parser with configurable separator(s) and escape
 #[rustler::nif]
-fn streaming_new_with_config<'a>(sep_term: Term<'a>, esc_term: Term<'a>) -> NifResult<StreamingParserRef> {
+fn streaming_new_with_config<'a>(
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
+) -> NifResult<StreamingParserRef> {
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
     Ok(if is_all_single_byte(&separators, &escape) {
@@ -469,8 +469,7 @@ fn parse_string_zero_copy_with_config<'a>(
         };
         Ok(boundaries_to_term_hybrid(env, input, boundaries, esc))
     } else {
-        let boundaries =
-            parse_csv_boundaries_general(bytes, &separators.patterns, &escape.bytes);
+        let boundaries = parse_csv_boundaries_general(bytes, &separators.patterns, &escape.bytes);
         Ok(boundaries_to_term_hybrid_general(
             env,
             input,
@@ -513,8 +512,8 @@ fn decode_header_mode<'a>(header_mode: Term<'a>) -> NifResult<HeaderMode<'a>> {
 }
 
 /// Convert a Cow field to a binary term (for building key terms from first row)
-fn cow_field_to_binary_term<'a>(env: Env<'a>, field: &Cow<'_, [u8]>) -> Term<'a> {
-    let bytes = field.as_ref();
+fn cow_field_to_binary_term<'a>(env: Env<'a>, field: &[u8]) -> Term<'a> {
+    let bytes = field;
     let mut binary = NewBinary::new(env, bytes.len());
     binary.as_mut_slice().copy_from_slice(bytes);
     binary.into()
@@ -557,9 +556,7 @@ fn dispatch_cow_parse<'a>(
     } else {
         match strategy {
             "basic" | "simd" => parse_csv_general(bytes, &separators.patterns, &escape.bytes),
-            "indexed" => {
-                parse_csv_indexed_general(bytes, &separators.patterns, &escape.bytes)
-            }
+            "indexed" => parse_csv_indexed_general(bytes, &separators.patterns, &escape.bytes),
             _ => unreachable!(),
         }
     }
@@ -579,9 +576,7 @@ fn parse_to_maps<'a>(
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
     let header_mode = decode_header_mode(header_mode_term)?;
-    let strategy_str = strategy
-        .atom_to_string()
-        .map_err(|_| Error::BadArg)?;
+    let strategy_str = strategy.atom_to_string().map_err(|_| Error::BadArg)?;
     let bytes = input.as_slice();
 
     match strategy_str.as_str() {
@@ -596,7 +591,7 @@ fn parse_to_maps<'a>(
                     // First row = keys
                     let key_terms: Vec<Term<'a>> = all_rows[0]
                         .iter()
-                        .map(|f| cow_field_to_binary_term(env, f))
+                        .map(|f| cow_field_to_binary_term(env, f.as_ref()))
                         .collect();
                     Ok(cow_rows_to_maps(env, &key_terms, &all_rows[1..]))
                 }

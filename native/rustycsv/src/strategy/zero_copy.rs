@@ -55,7 +55,8 @@ pub fn parse_csv_boundaries_multi_sep(
     let mut pos = 0;
 
     while pos < input.len() {
-        let (row_boundaries, next_pos) = parse_row_boundaries_multi_sep(input, pos, separators, escape);
+        let (row_boundaries, next_pos) =
+            parse_row_boundaries_multi_sep(input, pos, separators, escape);
 
         if !row_boundaries.is_empty() {
             rows.push(row_boundaries);
@@ -92,25 +93,23 @@ fn parse_row_boundaries_multi_sep(
                 in_quotes = false;
             }
             pos += 1;
+        } else if byte == escape {
+            in_quotes = true;
+            pos += 1;
+        } else if is_separator(byte, separators) {
+            boundaries.push((field_start, pos));
+            pos += 1;
+            field_start = pos;
+        } else if byte == b'\n' {
+            // End of row (standalone \n)
+            boundaries.push((field_start, pos));
+            return (boundaries, pos + 1);
+        } else if byte == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
+            // End of row (\r\n)
+            boundaries.push((field_start, pos));
+            return (boundaries, pos + 2);
         } else {
-            if byte == escape {
-                in_quotes = true;
-                pos += 1;
-            } else if is_separator(byte, separators) {
-                boundaries.push((field_start, pos));
-                pos += 1;
-                field_start = pos;
-            } else if byte == b'\n' {
-                // End of row (standalone \n)
-                boundaries.push((field_start, pos));
-                return (boundaries, pos + 1);
-            } else if byte == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
-                // End of row (\r\n)
-                boundaries.push((field_start, pos));
-                return (boundaries, pos + 2);
-            } else {
-                pos += 1;
-            }
+            pos += 1;
         }
     }
 

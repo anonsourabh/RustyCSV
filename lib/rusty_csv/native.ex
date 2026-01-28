@@ -505,5 +505,4 @@ defmodule RustyCSV.Native do
   """
   @spec reset_rust_memory_stats() :: {non_neg_integer(), non_neg_integer()}
   def reset_rust_memory_stats, do: :erlang.nif_error(:nif_not_loaded)
-
 end

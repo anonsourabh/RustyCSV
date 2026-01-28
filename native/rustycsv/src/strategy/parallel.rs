@@ -7,7 +7,10 @@
 // Important: We can't build BEAM terms on worker threads, so we return
 // owned Vec<Vec<Vec<u8>>> and convert to terms on the scheduler thread.
 
-use crate::core::{find_row_starts_with_escape, parse_line_fields_owned_with_config, parse_line_fields_owned_multi_sep};
+use crate::core::{
+    find_row_starts_with_escape, parse_line_fields_owned_multi_sep,
+    parse_line_fields_owned_with_config,
+};
 use rayon::prelude::*;
 
 /// Parse CSV in parallel, returning owned rows

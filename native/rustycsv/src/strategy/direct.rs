@@ -238,12 +238,20 @@ pub fn parse_csv_fast_with_config(
 }
 
 /// Approach A with multiple separator support
-pub fn parse_csv_multi_sep<'a>(input: &'a [u8], separators: &[u8], escape: u8) -> Vec<Vec<Cow<'a, [u8]>>> {
+pub fn parse_csv_multi_sep<'a>(
+    input: &'a [u8],
+    separators: &[u8],
+    escape: u8,
+) -> Vec<Vec<Cow<'a, [u8]>>> {
     parse_csv_full_multi_sep(input, separators, escape)
 }
 
 /// Approach B with multiple separator support
-pub fn parse_csv_fast_multi_sep<'a>(input: &'a [u8], separators: &[u8], escape: u8) -> Vec<Vec<Cow<'a, [u8]>>> {
+pub fn parse_csv_fast_multi_sep<'a>(
+    input: &'a [u8],
+    separators: &[u8],
+    escape: u8,
+) -> Vec<Vec<Cow<'a, [u8]>>> {
     parse_csv_full_multi_sep(input, separators, escape)
 }
 

@@ -230,7 +230,9 @@ fn field_to_term_hybrid_general<'a>(
             return binary.into();
         } else {
             // Quoted but no escapes: sub-binary of inner content
-            return unsafe { make_subbinary(env, input_term, start + esc_len, end - start - 2 * esc_len) };
+            return unsafe {
+                make_subbinary(env, input_term, start + esc_len, end - start - 2 * esc_len)
+            };
         }
     }
 
@@ -252,7 +254,8 @@ pub fn boundaries_to_term_hybrid_general<'a>(
     for row in boundaries.into_iter().rev() {
         let mut row_list = Term::list_new_empty(env);
         for (start, end) in row.into_iter().rev() {
-            let field_term = field_to_term_hybrid_general(env, input_bytes, input_term, start, end, escape);
+            let field_term =
+                field_to_term_hybrid_general(env, input_bytes, input_term, start, end, escape);
             row_list = row_list.list_prepend(field_term);
         }
         list = list.list_prepend(row_list);
@@ -311,11 +314,7 @@ pub fn cow_rows_to_maps<'a>(
 
 /// Convert owned rows to maps.
 /// Takes a slice to avoid skip+collect copies at the call site.
-pub fn owned_rows_to_maps<'a>(
-    env: Env<'a>,
-    keys: &[Term<'a>],
-    rows: &[Vec<Vec<u8>>],
-) -> Term<'a> {
+pub fn owned_rows_to_maps<'a>(env: Env<'a>, keys: &[Term<'a>], rows: &[Vec<Vec<u8>>]) -> Term<'a> {
     let num_keys = keys.len();
     let nil_term = atom::nil().encode(env);
     let mut value_terms = vec![nil_term; num_keys];
@@ -395,4 +394,3 @@ pub fn boundaries_to_maps_hybrid_general<'a>(
     }
     list
 }
-

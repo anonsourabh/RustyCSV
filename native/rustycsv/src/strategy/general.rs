@@ -446,8 +446,7 @@ pub fn parse_csv_boundaries_general(
     let mut pos = 0;
 
     while pos < input.len() {
-        let (boundaries, next_pos) =
-            parse_row_boundaries_general(input, pos, separators, escape);
+        let (boundaries, next_pos) = parse_row_boundaries_general(input, pos, separators, escape);
         if !boundaries.is_empty() {
             rows.push(boundaries);
         }
@@ -775,10 +774,7 @@ mod tests {
 
         let rows = parser.take_rows(10);
         assert_eq!(rows.len(), 2);
-        assert_eq!(
-            rows[0],
-            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
-        );
+        assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
     }
 
     #[test]
@@ -792,10 +788,7 @@ mod tests {
         assert_eq!(parser.available_rows(), 2);
 
         let rows = parser.take_rows(10);
-        assert_eq!(
-            rows[0],
-            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
-        );
+        assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
     }
 
     #[test]
