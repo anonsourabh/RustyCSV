@@ -5,7 +5,7 @@
 //
 // Benefits: Better cache utilization, can skip rows, predictable memory usage
 
-use crate::core::{extract_field, extract_field_cow, extract_field_cow_with_escape};
+use crate::core::{extract_field, extract_field_cow, extract_field_cow_with_escape, is_separator};
 use std::borrow::Cow;
 
 /// Represents a field's position within a row
@@ -218,6 +218,117 @@ pub fn parse_csv_indexed_with_config(
     escape: u8,
 ) -> Vec<Vec<Cow<'_, [u8]>>> {
     let index = build_index_with_config(input, separator, escape);
+    extract_all_with_escape(input, &index, escape)
+}
+
+/// Parse a single row with multiple separator support and return field bounds
+fn parse_row_index_multi_sep(
+    input: &[u8],
+    start: usize,
+    separators: &[u8],
+    escape: u8,
+) -> (Vec<FieldBound>, usize) {
+    let mut fields = Vec::new();
+    let mut pos = start;
+    let mut field_start = start;
+    let mut in_quotes = false;
+
+    while pos < input.len() {
+        let byte = input[pos];
+
+        if in_quotes {
+            if byte == escape {
+                if pos + 1 < input.len() && input[pos + 1] == escape {
+                    pos += 2;
+                    continue;
+                }
+                in_quotes = false;
+            }
+            pos += 1;
+        } else if byte == escape {
+            in_quotes = true;
+            pos += 1;
+        } else if is_separator(byte, separators) {
+            fields.push(FieldBound {
+                start: field_start,
+                end: pos,
+            });
+            pos += 1;
+            field_start = pos;
+        } else if byte == b'\n' {
+            fields.push(FieldBound {
+                start: field_start,
+                end: pos,
+            });
+            pos += 1;
+            return (fields, pos);
+        } else if byte == b'\r' {
+            fields.push(FieldBound {
+                start: field_start,
+                end: pos,
+            });
+            pos += 1;
+            if pos < input.len() && input[pos] == b'\n' {
+                pos += 1;
+            }
+            return (fields, pos);
+        } else {
+            pos += 1;
+        }
+    }
+
+    // End of input - add final field if any content
+    if field_start < input.len() || !fields.is_empty() {
+        fields.push(FieldBound {
+            start: field_start,
+            end: input.len(),
+        });
+    }
+
+    (fields, pos)
+}
+
+/// Build an index with multiple separator support
+pub fn build_index_multi_sep(input: &[u8], separators: &[u8], escape: u8) -> CsvIndex {
+    // Optimize for single separator case
+    if separators.len() == 1 {
+        return build_index_with_config(input, separators[0], escape);
+    }
+
+    let mut row_bounds = Vec::new();
+    let mut field_bounds = Vec::new();
+    let mut pos = 0;
+
+    while pos < input.len() {
+        let row_start = pos;
+        let (fields, next_pos) = parse_row_index_multi_sep(input, pos, separators, escape);
+
+        if !fields.is_empty() {
+            let row_end = if !fields.is_empty() {
+                fields.last().unwrap().end
+            } else {
+                pos
+            };
+            row_bounds.push((row_start, row_end));
+            field_bounds.push(fields);
+        }
+
+        pos = next_pos;
+    }
+
+    CsvIndex {
+        row_bounds,
+        field_bounds,
+    }
+}
+
+/// Combined parse with multiple separator support
+pub fn parse_csv_indexed_multi_sep<'a>(
+    input: &'a [u8],
+    separators: &[u8],
+    escape: u8,
+) -> Vec<Vec<Cow<'a, [u8]>>> {
+    let index = build_index_multi_sep(input, separators, escape);
     extract_all_with_escape(input, &index, escape)
 }
 

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-separator support** - Full NimbleCSV API compatibility for multiple separator characters
+  - `separator: [",", ";"]` - accepts a list of single-byte separator strings
+  - **Parsing**: Any separator in the list is recognized as a field delimiter
+  - **Dumping**: Only the **first** separator is used for output (deterministic)
+  - Uses SIMD-optimized `memchr2`/`memchr3` for 2-3 separators, with fallback for 4+
+  - Works with all parsing strategies: `:simd`, `:basic`, `:indexed`, `:parallel`, `:zero_copy`
+  - Works with streaming parser
+  - Backward compatible: single separator string still works as before
+
 ## [0.2.0] - 2026-01-25
 
 ### Added

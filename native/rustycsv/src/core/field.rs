@@ -1,6 +1,6 @@
 // Field extraction and quote handling
 
-use super::scanner::{find_next_comma, find_next_delimiter, line_has_escape, line_has_quotes};
+use super::scanner::{find_next_comma, find_next_delimiter, find_next_separator, is_separator, line_has_escape, line_has_quotes};
 use std::borrow::Cow;
 
 /// Extract a field from input, stripping surrounding quotes and unescaping doubled quotes.
@@ -292,6 +292,22 @@ pub fn parse_line_fields_owned_with_config(line: &[u8], separator: u8, escape: u
     parse_line_quoted_owned_with_config(line, separator, escape)
 }
 
+/// Parse a line into owned fields with multiple separator support
+pub fn parse_line_fields_owned_multi_sep(line: &[u8], separators: &[u8], escape: u8) -> Vec<Vec<u8>> {
+    // Optimize for single separator case
+    if separators.len() == 1 {
+        return parse_line_fields_owned_with_config(line, separators[0], escape);
+    }
+
+    // Fast path: no escape chars
+    if !line_has_escape(line, escape) {
+        return parse_line_simple_owned_multi_sep(line, separators);
+    }
+
+    // Slow path: handle quoted fields
+    parse_line_quoted_owned_multi_sep(line, separators, escape)
+}
+
 #[allow(dead_code)]
 fn parse_line_simple_owned(line: &[u8]) -> Vec<Vec<u8>> {
     parse_line_simple_owned_with_sep(line, b',')
@@ -344,6 +360,72 @@ fn parse_line_quoted_owned_with_config(line: &[u8], separator: u8, escape: u8) -
             in_quotes = true;
             pos += 1;
         } else if byte == separator {
+            fields.push(extract_field_owned_with_escape(
+                line,
+                field_start,
+                pos,
+                escape,
+            ));
+            pos += 1;
+            field_start = pos;
+        } else {
+            pos += 1;
+        }
+    }
+
+    // Last field
+    fields.push(extract_field_owned_with_escape(
+        line,
+        field_start,
+        pos,
+        escape,
+    ));
+
+    fields
+}
+
+fn parse_line_simple_owned_multi_sep(line: &[u8], separators: &[u8]) -> Vec<Vec<u8>> {
+    // Pre-allocate with estimate of ~8 fields per row
+    let mut fields = Vec::with_capacity(8);
+    let mut pos = 0;
+
+    while pos < line.len() {
+        let field_end = find_next_separator(line, pos, separators).unwrap_or(line.len());
+        fields.push(line[pos..field_end].to_vec());
+        pos = field_end + 1;
+    }
+
+    // Handle trailing separator
+    if !line.is_empty() && is_separator(line[line.len() - 1], separators) {
+        fields.push(Vec::new());
+    }
+
+    fields
+}
+
+fn parse_line_quoted_owned_multi_sep(line: &[u8], separators: &[u8], escape: u8) -> Vec<Vec<u8>> {
+    // Pre-allocate with estimate of ~8 fields per row
+    let mut fields = Vec::with_capacity(8);
+    let mut pos = 0;
+    let mut field_start = 0;
+    let mut in_quotes = false;
+
+    while pos < line.len() {
+        let byte = line[pos];
+
+        if in_quotes {
+            if byte == escape {
+                if pos + 1 < line.len() && line[pos + 1] == escape {
+                    pos += 2;
+                    continue;
+                }
+                in_quotes = false;
+            }
+            pos += 1;
+        } else if byte == escape {
+            in_quotes = true;
+            pos += 1;
+        } else if is_separator(byte, separators) {
             fields.push(extract_field_owned_with_escape(
                 line,
                 field_start,

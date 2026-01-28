@@ -66,8 +66,8 @@ defmodule RustyCSV.Native do
   @typedoc "Multiple parsed rows"
   @type rows :: [row()]
 
-  @typedoc "Field separator byte (e.g., `,` = 44, `\\t` = 9)"
-  @type separator :: non_neg_integer()
+  @typedoc "Field separator bytes as a binary (e.g., `<<44>>` for comma, `<<44, 59>>` for comma or semicolon)"
+  @type separator :: binary()
 
   @typedoc "Quote/escape byte (e.g., `\"` = 34)"
   @type escape :: non_neg_integer()
@@ -92,22 +92,26 @@ defmodule RustyCSV.Native do
   def parse_string(_csv), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Parse CSV with configurable separator and escape characters.
+  Parse CSV with configurable separator(s) and escape characters.
 
   ## Parameters
 
     * `csv` - The CSV binary to parse
-    * `separator` - The field separator byte (e.g., `,` = 44, `\\t` = 9)
+    * `separator` - The field separator bytes as a binary (e.g., `<<44>>` for comma, `<<44, 59>>` for comma or semicolon)
     * `escape` - The quote/escape byte (e.g., `"` = 34)
 
   ## Examples
 
       # TSV parsing (tab-separated)
-      iex> RustyCSV.Native.parse_string_with_config("a\\tb\\n1\\t2\\n", 9, 34)
+      iex> RustyCSV.Native.parse_string_with_config("a\\tb\\n1\\t2\\n", <<9>>, 34)
       [["a", "b"], ["1", "2"]]
 
+      # Multi-separator parsing (comma or semicolon)
+      iex> RustyCSV.Native.parse_string_with_config("a,b;c\\n1;2,3\\n", <<44, 59>>, 34)
+      [["a", "b", "c"], ["1", "2", "3"]]
+
   """
-  @spec parse_string_with_config(binary(), non_neg_integer(), non_neg_integer()) :: rows()
+  @spec parse_string_with_config(binary(), binary(), non_neg_integer()) :: rows()
   def parse_string_with_config(_csv, _separator, _escape), do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
@@ -130,16 +134,16 @@ defmodule RustyCSV.Native do
   def parse_string_fast(_csv), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Parse CSV using SIMD with configurable separator and escape.
+  Parse CSV using SIMD with configurable separator(s) and escape.
 
   ## Examples
 
       # TSV parsing (tab-separated)
-      iex> RustyCSV.Native.parse_string_fast_with_config("a\\tb\\n1\\t2\\n", 9, 34)
+      iex> RustyCSV.Native.parse_string_fast_with_config("a\\tb\\n1\\t2\\n", <<9>>, 34)
       [["a", "b"], ["1", "2"]]
 
   """
-  @spec parse_string_fast_with_config(binary(), non_neg_integer(), non_neg_integer()) :: rows()
+  @spec parse_string_fast_with_config(binary(), binary(), non_neg_integer()) :: rows()
   def parse_string_fast_with_config(_csv, _separator, _escape),
     do: :erlang.nif_error(:nif_not_loaded)
 
@@ -164,16 +168,16 @@ defmodule RustyCSV.Native do
   def parse_string_indexed(_csv), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Parse CSV using two-phase approach with configurable separator and escape.
+  Parse CSV using two-phase approach with configurable separator(s) and escape.
 
   ## Examples
 
       # TSV parsing (tab-separated)
-      iex> RustyCSV.Native.parse_string_indexed_with_config("a\\tb\\n1\\t2\\n", 9, 34)
+      iex> RustyCSV.Native.parse_string_indexed_with_config("a\\tb\\n1\\t2\\n", <<9>>, 34)
       [["a", "b"], ["1", "2"]]
 
   """
-  @spec parse_string_indexed_with_config(binary(), non_neg_integer(), non_neg_integer()) :: rows()
+  @spec parse_string_indexed_with_config(binary(), binary(), non_neg_integer()) :: rows()
   def parse_string_indexed_with_config(_csv, _separator, _escape),
     do: :erlang.nif_error(:nif_not_loaded)
 
@@ -199,20 +203,20 @@ defmodule RustyCSV.Native do
   def streaming_new, do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Create a new streaming parser with configurable separator and escape.
+  Create a new streaming parser with configurable separator(s) and escape.
 
   ## Parameters
 
-    * `separator` - The field separator byte (e.g., `,` = 44, `\\t` = 9)
+    * `separator` - The field separator bytes as a binary (e.g., `<<44>>` for comma, `<<44, 59>>` for comma or semicolon)
     * `escape` - The quote/escape byte (e.g., `"` = 34)
 
   ## Examples
 
       # TSV streaming parser
-      parser = RustyCSV.Native.streaming_new_with_config(9, 34)
+      parser = RustyCSV.Native.streaming_new_with_config(<<9>>, 34)
 
   """
-  @spec streaming_new_with_config(non_neg_integer(), non_neg_integer()) :: parser_ref()
+  @spec streaming_new_with_config(binary(), non_neg_integer()) :: parser_ref()
   def streaming_new_with_config(_separator, _escape), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -296,16 +300,16 @@ defmodule RustyCSV.Native do
   def parse_string_parallel(_csv), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Parse CSV in parallel with configurable separator and escape.
+  Parse CSV in parallel with configurable separator(s) and escape.
 
   ## Examples
 
       # TSV parallel parsing (tab-separated)
-      iex> RustyCSV.Native.parse_string_parallel_with_config("a\\tb\\n1\\t2\\n", 9, 34)
+      iex> RustyCSV.Native.parse_string_parallel_with_config("a\\tb\\n1\\t2\\n", <<9>>, 34)
       [["a", "b"], ["1", "2"]]
 
   """
-  @spec parse_string_parallel_with_config(binary(), non_neg_integer(), non_neg_integer()) ::
+  @spec parse_string_parallel_with_config(binary(), binary(), non_neg_integer()) ::
           rows()
   def parse_string_parallel_with_config(_csv, _separator, _escape),
     do: :erlang.nif_error(:nif_not_loaded)
@@ -334,16 +338,16 @@ defmodule RustyCSV.Native do
   def parse_string_zero_copy(_csv), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Parse CSV using zero-copy with configurable separator and escape.
+  Parse CSV using zero-copy with configurable separator(s) and escape.
 
   ## Examples
 
       # TSV zero-copy parsing (tab-separated)
-      iex> RustyCSV.Native.parse_string_zero_copy_with_config("a\\tb\\n1\\t2\\n", 9, 34)
+      iex> RustyCSV.Native.parse_string_zero_copy_with_config("a\\tb\\n1\\t2\\n", <<9>>, 34)
       [["a", "b"], ["1", "2"]]
 
   """
-  @spec parse_string_zero_copy_with_config(binary(), non_neg_integer(), non_neg_integer()) ::
+  @spec parse_string_zero_copy_with_config(binary(), binary(), non_neg_integer()) ::
           rows()
   def parse_string_zero_copy_with_config(_csv, _separator, _escape),
     do: :erlang.nif_error(:nif_not_loaded)
@@ -398,4 +402,5 @@ defmodule RustyCSV.Native do
   """
   @spec reset_rust_memory_stats() :: {non_neg_integer(), non_neg_integer()}
   def reset_rust_memory_stats, do: :erlang.nif_error(:nif_not_loaded)
+
 end

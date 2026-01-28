@@ -8,7 +8,7 @@
 // - Buffers incomplete rows until more data arrives
 // - Returns rows in batches to reduce NIF call overhead
 
-use crate::core::extract_field_owned_with_escape;
+use crate::core::{extract_field_owned_with_escape, is_separator};
 
 /// State for streaming CSV parser
 pub struct StreamingParser {
@@ -22,8 +22,8 @@ pub struct StreamingParser {
     scan_pos: usize,
     /// Track if we're inside quotes (important for multi-chunk quoted fields)
     in_quotes: bool,
-    /// Field separator character
-    separator: u8,
+    /// Field separator characters (supports multiple separators for NimbleCSV compatibility)
+    separators: Vec<u8>,
     /// Quote/escape character
     escape: u8,
 }
@@ -42,7 +42,20 @@ impl StreamingParser {
             partial_row_start: 0,
             scan_pos: 0,
             in_quotes: false,
-            separator,
+            separators: vec![separator],
+            escape,
+        }
+    }
+
+    /// Create a new streaming parser with multiple separator support
+    pub fn with_multi_sep(separators: &[u8], escape: u8) -> Self {
+        StreamingParser {
+            buffer: Vec::new(),
+            complete_rows: Vec::new(),
+            partial_row_start: 0,
+            scan_pos: 0,
+            in_quotes: false,
+            separators: separators.to_vec(),
             escape,
         }
     }
@@ -127,7 +140,7 @@ impl StreamingParser {
         let mut pos = 0;
         let mut field_start = 0;
         let mut in_quotes = false;
-        let separator = self.separator;
+        let separators = &self.separators;
         let escape = self.escape;
 
         while pos < line.len() {
@@ -145,7 +158,7 @@ impl StreamingParser {
             } else if byte == escape {
                 in_quotes = true;
                 pos += 1;
-            } else if byte == separator {
+            } else if is_separator(byte, separators) {
                 fields.push(extract_field_owned_with_escape(
                     line,
                     field_start,
@@ -227,10 +240,16 @@ impl StreamingParser {
         // separator and escape are preserved
     }
 
-    /// Get the separator character
+    /// Get the separators
+    #[allow(dead_code)]
+    pub fn separators(&self) -> &[u8] {
+        &self.separators
+    }
+
+    /// Get the first separator (for backward compatibility)
     #[allow(dead_code)]
     pub fn separator(&self) -> u8 {
-        self.separator
+        self.separators.first().copied().unwrap_or(b',')
     }
 
     /// Get the escape character

@@ -7,7 +7,7 @@
 // Important: We can't build BEAM terms on worker threads, so we return
 // owned Vec<Vec<Vec<u8>>> and convert to terms on the scheduler thread.
 
-use crate::core::{find_row_starts_with_escape, parse_line_fields_owned_with_config};
+use crate::core::{find_row_starts_with_escape, parse_line_fields_owned_with_config, parse_line_fields_owned_multi_sep};
 use rayon::prelude::*;
 
 /// Parse CSV in parallel, returning owned rows
@@ -53,6 +53,61 @@ pub fn parse_csv_parallel_with_config(
 
             let line = &input[start..line_end];
             let fields = parse_line_fields_owned_with_config(line, separator, escape);
+
+            if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
+                None
+            } else {
+                Some(fields)
+            }
+        })
+        .collect()
+}
+
+/// Parse CSV in parallel with multiple separator support
+pub fn parse_csv_parallel_multi_sep(
+    input: &[u8],
+    separators: &[u8],
+    escape: u8,
+) -> Vec<Vec<Vec<u8>>> {
+    // Optimize for single separator case
+    if separators.len() == 1 {
+        return parse_csv_parallel_with_config(input, separators[0], escape);
+    }
+
+    // Phase 1: Find row boundaries (single-threaded, quote-aware)
+    let row_starts = find_row_starts_with_escape(input, escape);
+
+    if row_starts.is_empty() {
+        return Vec::new();
+    }
+
+    // Build (start, end) pairs for each row
+    let row_ranges: Vec<(usize, usize)> = row_starts
+        .windows(2)
+        .map(|w| (w[0], w[1]))
+        .chain(std::iter::once((*row_starts.last().unwrap(), input.len())))
+        .collect();
+
+    // Clone separators for thread safety
+    let separators_vec: Vec<u8> = separators.to_vec();
+
+    // Phase 2: Parse rows in parallel
+    row_ranges
+        .into_par_iter()
+        .filter_map(|(start, end)| {
+            // Find actual line end (strip trailing newlines)
+            let mut line_end = end;
+            while line_end > start && (input[line_end - 1] == b'\n' || input[line_end - 1] == b'\r')
+            {
+                line_end -= 1;
+            }
+
+            if line_end <= start {
+                return None;
+            }
+
+            let line = &input[start..line_end];
+            let fields = parse_line_fields_owned_multi_sep(line, &separators_vec, escape);
 
             if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
                 None

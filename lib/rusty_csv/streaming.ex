@@ -75,7 +75,7 @@ defmodule RustyCSV.Streaming do
   @type stream_options :: [
           chunk_size: pos_integer(),
           batch_size: pos_integer(),
-          separator: non_neg_integer(),
+          separator: binary(),
           escape: non_neg_integer(),
           encoding: RustyCSV.encoding(),
           bom: binary(),
@@ -137,7 +137,7 @@ defmodule RustyCSV.Streaming do
   def stream_file(path, opts \\ []) do
     chunk_size = Keyword.get(opts, :chunk_size, @default_chunk_size)
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
-    separator = Keyword.get(opts, :separator, ?,)
+    separator = Keyword.get(opts, :separator, <<?,>>)
     escape = Keyword.get(opts, :escape, ?")
 
     Stream.resource(
@@ -182,7 +182,7 @@ defmodule RustyCSV.Streaming do
   @spec stream_enumerable(Enumerable.t(), stream_options()) :: Enumerable.t()
   def stream_enumerable(enumerable, opts \\ []) do
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
-    separator = Keyword.get(opts, :separator, ?,)
+    separator = Keyword.get(opts, :separator, <<?,>>)
     escape = Keyword.get(opts, :escape, ?")
     encoding = Keyword.get(opts, :encoding, :utf8)
     bom = Keyword.get(opts, :bom, "")
@@ -282,7 +282,7 @@ defmodule RustyCSV.Streaming do
   def stream_device(device, opts \\ []) do
     chunk_size = Keyword.get(opts, :chunk_size, @default_chunk_size)
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
-    separator = Keyword.get(opts, :separator, ?,)
+    separator = Keyword.get(opts, :separator, <<?,>>)
     escape = Keyword.get(opts, :escape, ?")
 
     Stream.resource(
@@ -315,7 +315,7 @@ defmodule RustyCSV.Streaming do
   """
   @spec parse_chunks([binary()], keyword()) :: [row()]
   def parse_chunks(chunks, opts \\ []) when is_list(chunks) do
-    separator = Keyword.get(opts, :separator, ?,)
+    separator = Keyword.get(opts, :separator, <<?,>>)
     escape = Keyword.get(opts, :escape, ?")
     parser = RustyCSV.Native.streaming_new_with_config(separator, escape)
 

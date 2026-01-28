@@ -23,6 +23,12 @@ impl StreamingParserResource {
             inner: Mutex::new(StreamingParser::with_config(separator, escape)),
         }
     }
+
+    pub fn with_multi_sep(separators: &[u8], escape: u8) -> Self {
+        StreamingParserResource {
+            inner: Mutex::new(StreamingParser::with_multi_sep(separators, escape)),
+        }
+    }
 }
 
 impl Default for StreamingParserResource {

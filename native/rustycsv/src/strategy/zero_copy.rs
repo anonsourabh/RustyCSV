@@ -8,7 +8,7 @@
 // are garbage collected. Use this when you need maximum speed and control
 // memory lifetime yourself.
 
-use crate::core::find_next_delimiter;
+use crate::core::{find_next_delimiter, is_separator};
 use memchr::memchr;
 
 /// Parse CSV and return field boundaries (zero-copy approach)
@@ -38,6 +38,98 @@ pub fn parse_csv_boundaries_with_config(
     }
 
     rows
+}
+
+/// Parse CSV with multiple separator support, returning boundaries
+pub fn parse_csv_boundaries_multi_sep(
+    input: &[u8],
+    separators: &[u8],
+    escape: u8,
+) -> Vec<Vec<(usize, usize)>> {
+    // Optimize for single separator case
+    if separators.len() == 1 {
+        return parse_csv_boundaries_with_config(input, separators[0], escape);
+    }
+
+    let mut rows = Vec::with_capacity(input.len() / 50 + 1);
+    let mut pos = 0;
+
+    while pos < input.len() {
+        let (row_boundaries, next_pos) = parse_row_boundaries_multi_sep(input, pos, separators, escape);
+
+        if !row_boundaries.is_empty() {
+            rows.push(row_boundaries);
+        }
+
+        pos = next_pos;
+    }
+
+    rows
+}
+
+/// Parse a single row with multiple separator support and return field boundaries
+fn parse_row_boundaries_multi_sep(
+    input: &[u8],
+    start: usize,
+    separators: &[u8],
+    escape: u8,
+) -> (Vec<(usize, usize)>, usize) {
+    let mut boundaries = Vec::with_capacity(8);
+    let mut pos = start;
+    let mut field_start = start;
+    let mut in_quotes = false;
+
+    while pos < input.len() {
+        let byte = input[pos];
+
+        if in_quotes {
+            if byte == escape {
+                // Check for escaped quote ""
+                if pos + 1 < input.len() && input[pos + 1] == escape {
+                    pos += 2;
+                    continue;
+                }
+                in_quotes = false;
+            }
+            pos += 1;
+        } else {
+            if byte == escape {
+                in_quotes = true;
+                pos += 1;
+            } else if is_separator(byte, separators) {
+                boundaries.push((field_start, pos));
+                pos += 1;
+                field_start = pos;
+            } else if byte == b'\n' {
+                // End of row
+                // Handle trailing \r before \n
+                let field_end = if pos > field_start && input[pos - 1] == b'\r' {
+                    pos - 1
+                } else {
+                    pos
+                };
+                boundaries.push((field_start, field_end));
+                return (boundaries, pos + 1);
+            } else if byte == b'\r' {
+                // Could be \r alone or \r\n
+                boundaries.push((field_start, pos));
+                pos += 1;
+                if pos < input.len() && input[pos] == b'\n' {
+                    pos += 1;
+                }
+                return (boundaries, pos);
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    // End of input - last row without newline
+    if field_start < input.len() || !boundaries.is_empty() {
+        boundaries.push((field_start, input.len()));
+    }
+
+    (boundaries, input.len())
 }
 
 /// Parse a single row and return field boundaries

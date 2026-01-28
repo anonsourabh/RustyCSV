@@ -3,7 +3,7 @@
 **Ultra-fast CSV parsing for Elixir.** A purpose-built Rust NIF with six parsing strategies, SIMD acceleration, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
 
 [![Hex.pm](https://img.shields.io/hexpm/v/rusty_csv.svg)](https://hex.pm/packages/rusty_csv)
-[![Tests](https://img.shields.io/badge/tests-147%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-168%20passed-brightgreen.svg)]()
 [![RFC 4180](https://img.shields.io/badge/RFC%204180-compliant-blue.svg)]()
 
 ## Why RustyCSV?
@@ -23,7 +23,7 @@
 1. **Bounded memory streaming** - Process multi-GB files with ~64KB memory footprint
 2. **No parent binary retention** - Data copied to BEAM terms, Rust memory freed immediately
 3. **Multiple strategies** - Choose SIMD, parallel, streaming, or indexed based on your workload
-4. **Reduced scheduler load** - Heavy parsing runs on dirty schedulers
+4. **Reduced scheduler load** - Parallel strategy runs on dirty CPU schedulers
 5. **Full NimbleCSV compatibility** - Same API, drop-in replacement
 
 ## Feature Comparison
@@ -34,11 +34,12 @@
 | **SIMD acceleration** | ✅ via memchr | ❌ |
 | **Parallel parsing** | ✅ via rayon | ❌ |
 | **Streaming (bounded memory)** | ✅ | ❌ (requires full file in memory) |
+| **Multi-separator support** | ✅ `[",", ";"]` | ✅ |
 | **Encoding support** | ✅ UTF-8, UTF-16, Latin-1, UTF-32 | ✅ |
 | **Memory model** | ✅ Choice of copy or sub-binary | Sub-binary only |
 | **High-performance allocator** | ✅ mimalloc | System |
 | **Drop-in replacement** | ✅ Same API | - |
-| **RFC 4180 compliant** | ✅ 147 tests | ✅ |
+| **RFC 4180 compliant** | ✅ 168 tests | ✅ |
 | **Benchmark (7MB CSV)** | ~24ms | ~219ms |
 
 ## Purpose-Built for Elixir
@@ -190,7 +191,7 @@ MyApp.TSV.parse_string("a\tb\tc\n1\t2\t3\n")
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `:separator` | Field separator (any single byte) | `","` |
+| `:separator` | Field separator(s) - string or list of strings | `","` |
 | `:escape` | Quote character | `"\""` |
 | `:line_separator` | Line ending for dumps | `"\r\n"` |
 | `:newlines` | Accepted line endings | `["\r\n", "\n"]` |
@@ -199,6 +200,26 @@ MyApp.TSV.parse_string("a\tb\tc\n1\t2\t3\n")
 | `:dump_bom` | Add BOM when dumping | `false` |
 | `:escape_formula` | Escape formula injection | `nil` |
 | `:strategy` | Default parsing strategy | `:simd` |
+
+### Multi-Separator Support
+
+For files with inconsistent delimiters (common in European locales), specify multiple separators:
+
+```elixir
+# Accept both comma and semicolon as delimiters
+RustyCSV.define(MyApp.FlexibleCSV,
+  separator: [",", ";"],
+  escape: "\""
+)
+
+# Parse files with mixed separators
+MyApp.FlexibleCSV.parse_string("a,b;c\n1;2,3\n", skip_headers: false)
+#=> [["a", "b", "c"], ["1", "2", "3"]]
+
+# Dumping uses only the FIRST separator
+MyApp.FlexibleCSV.dump_to_iodata([["x", "y", "z"]]) |> IO.iodata_to_binary()
+#=> "x,y,z\n"
+```
 
 ### Encoding Support
 
@@ -238,7 +259,8 @@ RustyCSV is **fully RFC 4180 compliant** and validated against industry-standard
 | Edge cases (PapaParse-inspired) | 53 | ✅ All pass |
 | Core + NimbleCSV compat | 36 | ✅ All pass |
 | Encoding (UTF-16, Latin-1, etc.) | 20 | ✅ All pass |
-| **Total** | **147** | ✅ |
+| Multi-separator support | 19 | ✅ All pass |
+| **Total** | **168** | ✅ |
 
 See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for full compliance details.
 
@@ -373,7 +395,7 @@ mix deps.get
 # Compile (includes Rust NIF)
 mix compile
 
-# Run tests (147 tests)
+# Run tests (168 tests)
 mix test
 
 # Run benchmarks

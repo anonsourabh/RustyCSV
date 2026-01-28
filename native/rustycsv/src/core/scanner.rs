@@ -1,6 +1,6 @@
 // Row and field boundary detection using memchr (SIMD-accelerated)
 
-use memchr::{memchr, memchr3};
+use memchr::{memchr, memchr2, memchr3};
 
 /// Find the next newline position, handling \r\n
 /// Returns (line_end_exclusive, next_line_start)
@@ -124,3 +124,35 @@ pub fn find_next_delimiter(line: &[u8], start: usize, separator: u8) -> usize {
         .map(|i| start + i)
         .unwrap_or(line.len())
 }
+
+/// Find next position matching any of the separator bytes using optimized memchr variants
+/// Uses memchr for 1 separator, memchr2 for 2, memchr3 for 3, and linear scan for 4+
+#[inline]
+pub fn find_next_separator(data: &[u8], start: usize, separators: &[u8]) -> Option<usize> {
+    if start >= data.len() {
+        return None;
+    }
+    let slice = &data[start..];
+    match separators.len() {
+        0 => None,
+        1 => memchr(separators[0], slice),
+        2 => memchr2(separators[0], separators[1], slice),
+        3 => memchr3(separators[0], separators[1], separators[2], slice),
+        _ => slice.iter().position(|&b| separators.contains(&b)),
+    }
+    .map(|i| start + i)
+}
+
+/// Check if a byte is one of the separator bytes
+/// Optimized for common cases of 1-3 separators
+#[inline]
+pub fn is_separator(byte: u8, separators: &[u8]) -> bool {
+    match separators.len() {
+        0 => false,
+        1 => byte == separators[0],
+        2 => byte == separators[0] || byte == separators[1],
+        3 => byte == separators[0] || byte == separators[1] || byte == separators[2],
+        _ => separators.contains(&byte),
+    }
+}
+

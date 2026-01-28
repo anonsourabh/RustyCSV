@@ -5,7 +5,7 @@
 // - Basic: Simple extraction
 // - Fast: Uses Cow-based extraction with proper quote unescaping
 
-use crate::core::extract_field_cow_with_escape;
+use crate::core::{extract_field_cow_with_escape, is_separator};
 use std::borrow::Cow;
 
 /// Parse CSV bytes into Vec of rows, each row is Vec of Cow field slices
@@ -31,6 +31,105 @@ pub fn parse_csv_full_with_config(
     }
 
     rows
+}
+
+/// Parse CSV with multiple separator support
+pub fn parse_csv_full_multi_sep<'a>(
+    input: &'a [u8],
+    separators: &[u8],
+    escape: u8,
+) -> Vec<Vec<Cow<'a, [u8]>>> {
+    // Optimize for single separator case
+    if separators.len() == 1 {
+        return parse_csv_full_with_config(input, separators[0], escape);
+    }
+
+    let mut rows = Vec::new();
+    let mut pos = 0;
+
+    while pos < input.len() {
+        let (row, next_pos) = parse_row_cow_multi_sep(input, pos, separators, escape);
+        rows.push(row);
+        pos = next_pos;
+    }
+
+    rows
+}
+
+/// Parse a single row with multiple separator support
+fn parse_row_cow_multi_sep<'a>(
+    input: &'a [u8],
+    start: usize,
+    separators: &[u8],
+    escape: u8,
+) -> (Vec<Cow<'a, [u8]>>, usize) {
+    let mut fields = Vec::new();
+    let mut pos = start;
+    let mut field_start = start;
+    let mut in_quotes = false;
+
+    while pos < input.len() {
+        let byte = input[pos];
+
+        if in_quotes {
+            if byte == escape {
+                // Check for escaped quote
+                if pos + 1 < input.len() && input[pos + 1] == escape {
+                    pos += 2;
+                    continue;
+                }
+                in_quotes = false;
+            }
+            pos += 1;
+        } else if byte == escape {
+            in_quotes = true;
+            pos += 1;
+        } else if is_separator(byte, separators) {
+            fields.push(extract_field_cow_with_escape(
+                input,
+                field_start,
+                pos,
+                escape,
+            ));
+            pos += 1;
+            field_start = pos;
+        } else if byte == b'\n' {
+            fields.push(extract_field_cow_with_escape(
+                input,
+                field_start,
+                pos,
+                escape,
+            ));
+            pos += 1;
+            return (fields, pos);
+        } else if byte == b'\r' {
+            fields.push(extract_field_cow_with_escape(
+                input,
+                field_start,
+                pos,
+                escape,
+            ));
+            pos += 1;
+            if pos < input.len() && input[pos] == b'\n' {
+                pos += 1;
+            }
+            return (fields, pos);
+        } else {
+            pos += 1;
+        }
+    }
+
+    // Handle last field (no trailing newline)
+    if field_start <= input.len() {
+        fields.push(extract_field_cow_with_escape(
+            input,
+            field_start,
+            pos,
+            escape,
+        ));
+    }
+
+    (fields, pos)
 }
 
 /// Parse a single row with full quote handling, returns (fields, next_position)
@@ -140,6 +239,16 @@ pub fn parse_csv_fast_with_config(
     escape: u8,
 ) -> Vec<Vec<Cow<'_, [u8]>>> {
     parse_csv_full_with_config(input, separator, escape)
+}
+
+/// Approach A with multiple separator support
+pub fn parse_csv_multi_sep<'a>(input: &'a [u8], separators: &[u8], escape: u8) -> Vec<Vec<Cow<'a, [u8]>>> {
+    parse_csv_full_multi_sep(input, separators, escape)
+}
+
+/// Approach B with multiple separator support
+pub fn parse_csv_fast_multi_sep<'a>(input: &'a [u8], separators: &[u8], escape: u8) -> Vec<Vec<Cow<'a, [u8]>>> {
+    parse_csv_full_multi_sep(input, separators, escape)
 }
 
 #[cfg(test)]

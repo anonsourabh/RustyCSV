@@ -76,6 +76,26 @@ defmodule RustyCSV do
   The only behavioral difference is that RustyCSV adds the `:strategy` option
   for selecting the parsing approach.
 
+  ## Multi-Separator Support
+
+  Like NimbleCSV, RustyCSV supports multiple separator characters:
+
+      RustyCSV.define(MyParser,
+        separator: [",", ";"],
+        escape: "\""
+      )
+
+      # Any separator in the list is recognized when parsing
+      MyParser.parse_string("a,b;c\\n1;2,3\\n", skip_headers: false)
+      #=> [["a", "b", "c"], ["1", "2", "3"]]
+
+      # Only the FIRST separator is used when dumping
+      MyParser.dump_to_iodata([["a", "b", "c"]]) |> IO.iodata_to_binary()
+      #=> "a,b,c\\n"
+
+  This is useful for parsing CSV files with inconsistent delimiters, or files
+  that mix comma and semicolon separators (common in European locales).
+
   ## Encoding Support
 
   RustyCSV supports character encoding conversion via the `:encoding` option:
@@ -192,7 +212,11 @@ defmodule RustyCSV do
 
   ## Parsing Options
 
-    * `:separator` - Field separator character. Defaults to `","`.
+    * `:separator` - Field separator character(s). Can be a single string (e.g., `","`)
+      or a list of strings for multi-separator support (e.g., `[",", ";"]`).
+      When parsing, any separator in the list is recognized as a field delimiter.
+      When dumping, only the **first** separator is used for output.
+      Defaults to `","`.
     * `:escape` - Escape/quote character. Defaults to `"\""`.
     * `:newlines` - List of recognized line endings. Defaults to `["\r\n", "\n"]`.
     * `:trim_bom` - Remove BOM when parsing strings. Defaults to `false`.
@@ -212,7 +236,7 @@ defmodule RustyCSV do
 
   """
   @type define_options :: [
-          separator: String.t(),
+          separator: String.t() | [String.t()],
           escape: String.t(),
           newlines: [String.t()],
           line_separator: String.t(),
@@ -309,7 +333,17 @@ defmodule RustyCSV do
 
   ### Parsing Options
 
-    * `:separator` - The field separator character. Defaults to `","`.
+    * `:separator` - The field separator character(s). Can be a single string
+      (e.g., `","`) or a list of strings for multi-separator support
+      (e.g., `[",", ";"]`). Each separator must be a single byte.
+      Defaults to `","`.
+
+      When multiple separators are specified:
+      - **Parsing**: Any separator in the list is recognized as a field delimiter
+      - **Dumping**: Only the **first** separator is used for output
+
+      This is useful for parsing files with inconsistent delimiters or mixed
+      comma/semicolon separators (common in European locales).
 
     * `:escape` - The escape/quote character. Defaults to `"\""`.
 
@@ -384,6 +418,20 @@ defmodule RustyCSV do
         dump_bom: true
       )
 
+      # Define a multi-separator parser (comma or semicolon)
+      RustyCSV.define(MyApp.FlexibleCSV,
+        separator: [",", ";"],
+        escape: "\""
+      )
+
+      # Parse files with mixed delimiters
+      MyApp.FlexibleCSV.parse_string("a,b;c\n1;2,3\n", skip_headers: false)
+      #=> [["a", "b", "c"], ["1", "2", "3"]]
+
+      # Dumping uses the first separator (comma)
+      MyApp.FlexibleCSV.dump_to_iodata([["x", "y"]]) |> IO.iodata_to_binary()
+      #=> "x,y\n"
+
       # Get the configuration
       MyApp.CSV.options()
       #=> [separator: ",", escape: "\"", ...]
@@ -404,10 +452,13 @@ defmodule RustyCSV do
     separator = Keyword.get(options, :separator, ",")
     escape = Keyword.get(options, :escape, "\"")
 
-    validate_single_byte!(:separator, separator)
-    validate_single_byte!(:escape, escape)
+    # Validate and normalize separator(s)
+    {separator_list, separator_bytes} = validate_and_normalize_separator!(separator)
+    # First separator is used for dumping (NimbleCSV compatibility)
+    first_separator = hd(separator_list)
+    <<first_separator_byte>> = first_separator
 
-    <<separator_byte>> = separator
+    validate_single_byte!(:escape, escape)
     <<escape_byte>> = escape
 
     line_separator = Keyword.get(options, :line_separator, "\n")
@@ -425,7 +476,8 @@ defmodule RustyCSV do
     bom = :unicode.encoding_to_bom(encoding)
     encoded_newlines = Enum.map(newlines, &:unicode.characters_to_binary(&1, :utf8, encoding))
 
-    escape_chars = [separator, escape, "\n", "\r"] ++ reserved
+    # For escaping, use all separators plus escape and newlines
+    escape_chars = separator_list ++ [escape, "\n", "\r"] ++ reserved
 
     stored_options = [
       separator: separator,
@@ -441,8 +493,9 @@ defmodule RustyCSV do
     ]
 
     %{
-      separator: separator,
-      separator_byte: separator_byte,
+      separator: first_separator,
+      separator_byte: first_separator_byte,
+      separator_bytes: separator_bytes,
       escape: escape,
       escape_byte: escape_byte,
       line_separator: line_separator,
@@ -465,6 +518,36 @@ defmodule RustyCSV do
       raise ArgumentError,
             "RustyCSV requires a single-byte #{name}, got: #{inspect(value)}"
     end
+  end
+
+  # Validates and normalizes separator option.
+  # Accepts either a single-byte string or a list of single-byte strings.
+  # Returns {list_of_separator_strings, binary_of_separator_bytes}
+  defp validate_and_normalize_separator!(separator) when is_binary(separator) do
+    validate_single_byte!(:separator, separator)
+    {[separator], separator}
+  end
+
+  defp validate_and_normalize_separator!(separators) when is_list(separators) do
+    if Enum.empty?(separators) do
+      raise ArgumentError, "RustyCSV separator list cannot be empty"
+    end
+
+    Enum.each(separators, fn sep ->
+      unless is_binary(sep) and byte_size(sep) == 1 do
+        raise ArgumentError,
+              "RustyCSV requires each separator to be a single-byte string, got: #{inspect(sep)}"
+      end
+    end)
+
+    # Convert list of single-byte strings to a binary of bytes
+    bytes = for <<byte <- Enum.join(separators, "")>>, into: <<>>, do: <<byte>>
+    {separators, bytes}
+  end
+
+  defp validate_and_normalize_separator!(other) do
+    raise ArgumentError,
+          "RustyCSV separator must be a string or list of strings, got: #{inspect(other)}"
   end
 
   defp validate_encoding!(encoding) when encoding in [:utf8, :latin1], do: :ok
@@ -506,6 +589,7 @@ defmodule RustyCSV do
 
       @separator unquote(Macro.escape(config.separator))
       @separator_byte unquote(Macro.escape(config.separator_byte))
+      @separator_bytes unquote(Macro.escape(config.separator_bytes))
       @escape unquote(Macro.escape(config.escape))
       @escape_byte unquote(Macro.escape(config.escape_byte))
       @line_separator unquote(Macro.escape(config.line_separator))
@@ -634,23 +718,23 @@ defmodule RustyCSV do
   defp quoted_do_parse_string_clauses do
     quote do
       defp do_parse_string(string, :basic) do
-        RustyCSV.Native.parse_string_with_config(string, @separator_byte, @escape_byte)
+        RustyCSV.Native.parse_string_with_config(string, @separator_bytes, @escape_byte)
       end
 
       defp do_parse_string(string, :simd) do
-        RustyCSV.Native.parse_string_fast_with_config(string, @separator_byte, @escape_byte)
+        RustyCSV.Native.parse_string_fast_with_config(string, @separator_bytes, @escape_byte)
       end
 
       defp do_parse_string(string, :indexed) do
-        RustyCSV.Native.parse_string_indexed_with_config(string, @separator_byte, @escape_byte)
+        RustyCSV.Native.parse_string_indexed_with_config(string, @separator_bytes, @escape_byte)
       end
 
       defp do_parse_string(string, :parallel) do
-        RustyCSV.Native.parse_string_parallel_with_config(string, @separator_byte, @escape_byte)
+        RustyCSV.Native.parse_string_parallel_with_config(string, @separator_bytes, @escape_byte)
       end
 
       defp do_parse_string(string, :zero_copy) do
-        RustyCSV.Native.parse_string_zero_copy_with_config(string, @separator_byte, @escape_byte)
+        RustyCSV.Native.parse_string_zero_copy_with_config(string, @separator_bytes, @escape_byte)
       end
     end
   end
@@ -673,7 +757,7 @@ defmodule RustyCSV do
           RustyCSV.Streaming.stream_enumerable(stream,
             chunk_size: chunk_size,
             batch_size: batch_size,
-            separator: @separator_byte,
+            separator: @separator_bytes,
             escape: @escape_byte,
             encoding: @encoding,
             bom: @bom,

@@ -17,9 +17,11 @@ mod term;
 
 use resource::{StreamingParserRef, StreamingParserResource};
 use strategy::{
-    parse_csv, parse_csv_boundaries_with_config, parse_csv_fast, parse_csv_fast_with_config,
-    parse_csv_indexed, parse_csv_indexed_with_config, parse_csv_parallel,
-    parse_csv_parallel_with_config, parse_csv_with_config,
+    parse_csv, parse_csv_boundaries_with_config, parse_csv_boundaries_multi_sep,
+    parse_csv_fast, parse_csv_fast_with_config, parse_csv_fast_multi_sep,
+    parse_csv_indexed, parse_csv_indexed_with_config, parse_csv_indexed_multi_sep,
+    parse_csv_multi_sep, parse_csv_parallel, parse_csv_parallel_with_config,
+    parse_csv_parallel_multi_sep, parse_csv_with_config,
 };
 use term::{boundaries_to_term_hybrid, cow_rows_to_term, owned_rows_to_term};
 
@@ -144,16 +146,22 @@ fn parse_string<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     Ok(cow_rows_to_term(env, rows))
 }
 
-/// Parse CSV with configurable separator and escape character
+/// Parse CSV with configurable separator(s) and escape character
+/// separator is a binary containing one or more separator bytes
 #[rustler::nif]
 fn parse_string_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
-    separator: u8,
+    separator: Binary<'a>,
     escape: u8,
 ) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
-    let rows = parse_csv_with_config(bytes, separator, escape);
+    let separators = separator.as_slice();
+    let rows = if separators.len() == 1 {
+        parse_csv_with_config(bytes, separators[0], escape)
+    } else {
+        parse_csv_multi_sep(bytes, separators, escape)
+    };
     Ok(cow_rows_to_term(env, rows))
 }
 
@@ -169,16 +177,21 @@ fn parse_string_fast<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>>
     Ok(cow_rows_to_term(env, rows))
 }
 
-/// Parse using SIMD with configurable separator and escape character
+/// Parse using SIMD with configurable separator(s) and escape character
 #[rustler::nif]
 fn parse_string_fast_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
-    separator: u8,
+    separator: Binary<'a>,
     escape: u8,
 ) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
-    let rows = parse_csv_fast_with_config(bytes, separator, escape);
+    let separators = separator.as_slice();
+    let rows = if separators.len() == 1 {
+        parse_csv_fast_with_config(bytes, separators[0], escape)
+    } else {
+        parse_csv_fast_multi_sep(bytes, separators, escape)
+    };
     Ok(cow_rows_to_term(env, rows))
 }
 
@@ -194,16 +207,21 @@ fn parse_string_indexed<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'
     Ok(cow_rows_to_term(env, rows))
 }
 
-/// Parse using two-phase with configurable separator and escape character
+/// Parse using two-phase with configurable separator(s) and escape character
 #[rustler::nif]
 fn parse_string_indexed_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
-    separator: u8,
+    separator: Binary<'a>,
     escape: u8,
 ) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
-    let rows = parse_csv_indexed_with_config(bytes, separator, escape);
+    let separators = separator.as_slice();
+    let rows = if separators.len() == 1 {
+        parse_csv_indexed_with_config(bytes, separators[0], escape)
+    } else {
+        parse_csv_indexed_multi_sep(bytes, separators, escape)
+    };
     Ok(cow_rows_to_term(env, rows))
 }
 
@@ -217,10 +235,15 @@ fn streaming_new() -> StreamingParserRef {
     ResourceArc::new(StreamingParserResource::new())
 }
 
-/// Create a new streaming parser with configurable separator and escape
+/// Create a new streaming parser with configurable separator(s) and escape
 #[rustler::nif]
-fn streaming_new_with_config(separator: u8, escape: u8) -> StreamingParserRef {
-    ResourceArc::new(StreamingParserResource::with_config(separator, escape))
+fn streaming_new_with_config(separator: Binary, escape: u8) -> StreamingParserRef {
+    let separators = separator.as_slice();
+    if separators.len() == 1 {
+        ResourceArc::new(StreamingParserResource::with_config(separators[0], escape))
+    } else {
+        ResourceArc::new(StreamingParserResource::with_multi_sep(separators, escape))
+    }
 }
 
 /// Feed a chunk of data to the streaming parser
@@ -275,16 +298,21 @@ fn parse_string_parallel<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<
     Ok(owned_rows_to_term(env, rows))
 }
 
-/// Parse CSV in parallel with configurable separator and escape
+/// Parse CSV in parallel with configurable separator(s) and escape
 #[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_parallel_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
-    separator: u8,
+    separator: Binary<'a>,
     escape: u8,
 ) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
-    let rows = parse_csv_parallel_with_config(bytes, separator, escape);
+    let separators = separator.as_slice();
+    let rows = if separators.len() == 1 {
+        parse_csv_parallel_with_config(bytes, separators[0], escape)
+    } else {
+        parse_csv_parallel_multi_sep(bytes, separators, escape)
+    };
     Ok(owned_rows_to_term(env, rows))
 }
 
@@ -305,16 +333,21 @@ fn parse_string_zero_copy<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term
     Ok(boundaries_to_term_hybrid(env, input, boundaries, b'"'))
 }
 
-/// Parse CSV using zero-copy with configurable separator and escape
+/// Parse CSV using zero-copy with configurable separator(s) and escape
 #[rustler::nif]
 fn parse_string_zero_copy_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
-    separator: u8,
+    separator: Binary<'a>,
     escape: u8,
 ) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
-    let boundaries = parse_csv_boundaries_with_config(bytes, separator, escape);
+    let separators = separator.as_slice();
+    let boundaries = if separators.len() == 1 {
+        parse_csv_boundaries_with_config(bytes, separators[0], escape)
+    } else {
+        parse_csv_boundaries_multi_sep(bytes, separators, escape)
+    };
     Ok(boundaries_to_term_hybrid(env, input, boundaries, escape))
 }
 
