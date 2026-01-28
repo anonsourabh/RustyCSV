@@ -188,3 +188,73 @@ pub fn boundaries_to_term_hybrid<'a>(
     list
 }
 
+// ============================================================================
+// General Multi-Byte Escape Support (for zero-copy path)
+// ============================================================================
+
+use crate::strategy::{contains_escape, unescape_field_general};
+
+/// Convert a single field to a term with multi-byte escape, using sub-binary when possible
+#[inline]
+fn field_to_term_hybrid_general<'a>(
+    env: Env<'a>,
+    input_bytes: &[u8],
+    input_term: Term<'a>,
+    start: usize,
+    end: usize,
+    escape: &[u8],
+) -> Term<'a> {
+    if start >= end {
+        let binary = NewBinary::new(env, 0);
+        return binary.into();
+    }
+
+    let field = &input_bytes[start..end];
+    let esc_len = escape.len();
+
+    // Check if quoted (starts and ends with escape)
+    if field.len() >= 2 * esc_len
+        && field[..esc_len] == *escape
+        && field[field.len() - esc_len..] == *escape
+    {
+        let inner = &field[esc_len..field.len() - esc_len];
+
+        if contains_escape(inner, escape) {
+            // Must copy and unescape
+            let unescaped = unescape_field_general(inner, escape);
+            let mut binary = NewBinary::new(env, unescaped.len());
+            binary.as_mut_slice().copy_from_slice(&unescaped);
+            return binary.into();
+        } else {
+            // Quoted but no escapes: sub-binary of inner content
+            return unsafe { make_subbinary(env, input_term, start + esc_len, end - start - 2 * esc_len) };
+        }
+    }
+
+    // Unquoted: direct sub-binary
+    unsafe { make_subbinary(env, input_term, start, end - start) }
+}
+
+/// Convert field boundaries to Elixir terms with multi-byte escape support
+pub fn boundaries_to_term_hybrid_general<'a>(
+    env: Env<'a>,
+    input: Binary<'a>,
+    boundaries: Vec<Vec<(usize, usize)>>,
+    escape: &[u8],
+) -> Term<'a> {
+    let input_bytes = input.as_slice();
+    let input_term = input.to_term(env);
+    let mut list = Term::list_new_empty(env);
+
+    for row in boundaries.into_iter().rev() {
+        let mut row_list = Term::list_new_empty(env);
+        for (start, end) in row.into_iter().rev() {
+            let field_term = field_to_term_hybrid_general(env, input_bytes, input_term, start, end, escape);
+            row_list = row_list.list_prepend(field_term);
+        }
+        list = list.list_prepend(row_list);
+    }
+
+    list
+}
+

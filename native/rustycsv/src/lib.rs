@@ -8,22 +8,97 @@
 // E: Parallel parsing via rayon (parse_string_parallel)
 // F: Zero-copy sub-binary parsing (parse_string_zero_copy)
 
-use rustler::{Binary, Env, NifResult, ResourceArc, Term};
+use rustler::{Binary, Env, Error, NifResult, ResourceArc, Term};
 
 mod core;
 mod resource;
 mod strategy;
 mod term;
 
+/// Separators: list of patterns. Each pattern can be multi-byte.
+struct Separators {
+    patterns: Vec<Vec<u8>>,
+}
+
+/// Escape: single pattern, possibly multi-byte.
+struct Escape {
+    bytes: Vec<u8>,
+}
+
+/// Decode separator from a Term.
+/// Accepts: integer 44, binary <<44>>, or list [<<44>>, <<59>>], [<<58,58>>]
+fn decode_separators<'a>(term: Term<'a>) -> NifResult<Separators> {
+    // Try integer (single byte, single separator)
+    if let Ok(byte) = term.decode::<u8>() {
+        return Ok(Separators {
+            patterns: vec![vec![byte]],
+        });
+    }
+    // Try list of binaries (multiple separators, each possibly multi-byte)
+    // Must check list BEFORE single binary.
+    if let Ok(list) = term.decode::<Vec<Binary<'a>>>() {
+        let patterns: Vec<Vec<u8>> = list.iter().map(|b| b.as_slice().to_vec()).collect();
+        if patterns.is_empty() || patterns.iter().any(|p| p.is_empty()) {
+            return Err(Error::BadArg);
+        }
+        return Ok(Separators { patterns });
+    }
+    // Try single binary (single separator, possibly multi-byte)
+    if let Ok(binary) = term.decode::<Binary<'a>>() {
+        let slice = binary.as_slice();
+        if slice.is_empty() {
+            return Err(Error::BadArg);
+        }
+        return Ok(Separators {
+            patterns: vec![slice.to_vec()],
+        });
+    }
+    Err(Error::BadArg)
+}
+
+/// Decode escape from a Term.
+/// Accepts: integer 34 or binary <<34>> or binary <<36,36>>
+fn decode_escape<'a>(term: Term<'a>) -> NifResult<Escape> {
+    if let Ok(byte) = term.decode::<u8>() {
+        return Ok(Escape {
+            bytes: vec![byte],
+        });
+    }
+    if let Ok(binary) = term.decode::<Binary<'a>>() {
+        let slice = binary.as_slice();
+        if slice.is_empty() {
+            return Err(Error::BadArg);
+        }
+        return Ok(Escape {
+            bytes: slice.to_vec(),
+        });
+    }
+    Err(Error::BadArg)
+}
+
+/// Check if all separators and escape are single-byte (fast path eligible)
+fn is_all_single_byte(separators: &Separators, escape: &Escape) -> bool {
+    escape.bytes.len() == 1 && separators.patterns.iter().all(|p| p.len() == 1)
+}
+
+/// Extract single-byte separator values for fast path
+fn single_byte_seps(separators: &Separators) -> Vec<u8> {
+    separators.patterns.iter().map(|p| p[0]).collect()
+}
+
 use resource::{StreamingParserRef, StreamingParserResource};
 use strategy::{
-    parse_csv, parse_csv_boundaries_with_config, parse_csv_boundaries_multi_sep,
-    parse_csv_fast, parse_csv_fast_with_config, parse_csv_fast_multi_sep,
-    parse_csv_indexed, parse_csv_indexed_with_config, parse_csv_indexed_multi_sep,
-    parse_csv_multi_sep, parse_csv_parallel, parse_csv_parallel_with_config,
-    parse_csv_parallel_multi_sep, parse_csv_with_config,
+    parse_csv, parse_csv_boundaries_general, parse_csv_boundaries_multi_sep,
+    parse_csv_boundaries_with_config, parse_csv_fast, parse_csv_fast_multi_sep,
+    parse_csv_fast_with_config, parse_csv_general, parse_csv_indexed,
+    parse_csv_indexed_general, parse_csv_indexed_multi_sep, parse_csv_indexed_with_config,
+    parse_csv_multi_sep, parse_csv_parallel, parse_csv_parallel_general,
+    parse_csv_parallel_multi_sep, parse_csv_parallel_with_config, parse_csv_with_config,
 };
-use term::{boundaries_to_term_hybrid, cow_rows_to_term, owned_rows_to_term};
+use term::{
+    boundaries_to_term_hybrid, boundaries_to_term_hybrid_general, cow_rows_to_term,
+    owned_rows_to_term,
+};
 
 // ============================================================================
 // Allocator Configuration
@@ -146,21 +221,28 @@ fn parse_string<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     Ok(cow_rows_to_term(env, rows))
 }
 
-/// Parse CSV with configurable separator(s) and escape character
-/// separator is a binary containing one or more separator bytes
+/// Parse CSV with configurable separator(s) and escape
 #[rustler::nif]
 fn parse_string_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
-    separator: Binary<'a>,
-    escape: u8,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
     let bytes = input.as_slice();
-    let separators = separator.as_slice();
-    let rows = if separators.len() == 1 {
-        parse_csv_with_config(bytes, separators[0], escape)
+
+    let rows = if is_all_single_byte(&separators, &escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(&separators);
+        if sep_bytes.len() == 1 {
+            parse_csv_with_config(bytes, sep_bytes[0], esc)
+        } else {
+            parse_csv_multi_sep(bytes, &sep_bytes, esc)
+        }
     } else {
-        parse_csv_multi_sep(bytes, separators, escape)
+        parse_csv_general(bytes, &separators.patterns, &escape.bytes)
     };
     Ok(cow_rows_to_term(env, rows))
 }
@@ -177,20 +259,28 @@ fn parse_string_fast<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>>
     Ok(cow_rows_to_term(env, rows))
 }
 
-/// Parse using SIMD with configurable separator(s) and escape character
+/// Parse using SIMD with configurable separator(s) and escape
 #[rustler::nif]
 fn parse_string_fast_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
-    separator: Binary<'a>,
-    escape: u8,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
     let bytes = input.as_slice();
-    let separators = separator.as_slice();
-    let rows = if separators.len() == 1 {
-        parse_csv_fast_with_config(bytes, separators[0], escape)
+
+    let rows = if is_all_single_byte(&separators, &escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(&separators);
+        if sep_bytes.len() == 1 {
+            parse_csv_fast_with_config(bytes, sep_bytes[0], esc)
+        } else {
+            parse_csv_fast_multi_sep(bytes, &sep_bytes, esc)
+        }
     } else {
-        parse_csv_fast_multi_sep(bytes, separators, escape)
+        parse_csv_general(bytes, &separators.patterns, &escape.bytes)
     };
     Ok(cow_rows_to_term(env, rows))
 }
@@ -207,20 +297,28 @@ fn parse_string_indexed<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'
     Ok(cow_rows_to_term(env, rows))
 }
 
-/// Parse using two-phase with configurable separator(s) and escape character
+/// Parse using two-phase with configurable separator(s) and escape
 #[rustler::nif]
 fn parse_string_indexed_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
-    separator: Binary<'a>,
-    escape: u8,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
     let bytes = input.as_slice();
-    let separators = separator.as_slice();
-    let rows = if separators.len() == 1 {
-        parse_csv_indexed_with_config(bytes, separators[0], escape)
+
+    let rows = if is_all_single_byte(&separators, &escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(&separators);
+        if sep_bytes.len() == 1 {
+            parse_csv_indexed_with_config(bytes, sep_bytes[0], esc)
+        } else {
+            parse_csv_indexed_multi_sep(bytes, &sep_bytes, esc)
+        }
     } else {
-        parse_csv_indexed_multi_sep(bytes, separators, escape)
+        parse_csv_indexed_general(bytes, &separators.patterns, &escape.bytes)
     };
     Ok(cow_rows_to_term(env, rows))
 }
@@ -237,13 +335,23 @@ fn streaming_new() -> StreamingParserRef {
 
 /// Create a new streaming parser with configurable separator(s) and escape
 #[rustler::nif]
-fn streaming_new_with_config(separator: Binary, escape: u8) -> StreamingParserRef {
-    let separators = separator.as_slice();
-    if separators.len() == 1 {
-        ResourceArc::new(StreamingParserResource::with_config(separators[0], escape))
+fn streaming_new_with_config<'a>(sep_term: Term<'a>, esc_term: Term<'a>) -> NifResult<StreamingParserRef> {
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
+    Ok(if is_all_single_byte(&separators, &escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(&separators);
+        if sep_bytes.len() == 1 {
+            ResourceArc::new(StreamingParserResource::with_config(sep_bytes[0], esc))
+        } else {
+            ResourceArc::new(StreamingParserResource::with_multi_sep(&sep_bytes, esc))
+        }
     } else {
-        ResourceArc::new(StreamingParserResource::with_multi_sep(separators, escape))
-    }
+        ResourceArc::new(StreamingParserResource::with_general(
+            separators.patterns,
+            escape.bytes,
+        ))
+    })
 }
 
 /// Feed a chunk of data to the streaming parser
@@ -303,15 +411,23 @@ fn parse_string_parallel<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<
 fn parse_string_parallel_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
-    separator: Binary<'a>,
-    escape: u8,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
     let bytes = input.as_slice();
-    let separators = separator.as_slice();
-    let rows = if separators.len() == 1 {
-        parse_csv_parallel_with_config(bytes, separators[0], escape)
+
+    let rows = if is_all_single_byte(&separators, &escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(&separators);
+        if sep_bytes.len() == 1 {
+            parse_csv_parallel_with_config(bytes, sep_bytes[0], esc)
+        } else {
+            parse_csv_parallel_multi_sep(bytes, &sep_bytes, esc)
+        }
     } else {
-        parse_csv_parallel_multi_sep(bytes, separators, escape)
+        parse_csv_parallel_general(bytes, &separators.patterns, &escape.bytes)
     };
     Ok(owned_rows_to_term(env, rows))
 }
@@ -321,11 +437,6 @@ fn parse_string_parallel_with_config<'a>(
 // ============================================================================
 
 /// Parse CSV using zero-copy sub-binaries where possible
-/// Uses sub-binary references for unquoted and simply-quoted fields,
-/// only copies when quote unescaping is needed (hybrid Cow approach).
-///
-/// Trade-off: Sub-binaries keep the parent binary alive. Use when you
-/// want maximum speed and control memory lifetime yourself.
 #[rustler::nif]
 fn parse_string_zero_copy<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
@@ -338,17 +449,32 @@ fn parse_string_zero_copy<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term
 fn parse_string_zero_copy_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
-    separator: Binary<'a>,
-    escape: u8,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
     let bytes = input.as_slice();
-    let separators = separator.as_slice();
-    let boundaries = if separators.len() == 1 {
-        parse_csv_boundaries_with_config(bytes, separators[0], escape)
+
+    if is_all_single_byte(&separators, &escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(&separators);
+        let boundaries = if sep_bytes.len() == 1 {
+            parse_csv_boundaries_with_config(bytes, sep_bytes[0], esc)
+        } else {
+            parse_csv_boundaries_multi_sep(bytes, &sep_bytes, esc)
+        };
+        Ok(boundaries_to_term_hybrid(env, input, boundaries, esc))
     } else {
-        parse_csv_boundaries_multi_sep(bytes, separators, escape)
-    };
-    Ok(boundaries_to_term_hybrid(env, input, boundaries, escape))
+        let boundaries =
+            parse_csv_boundaries_general(bytes, &separators.patterns, &escape.bytes);
+        Ok(boundaries_to_term_hybrid_general(
+            env,
+            input,
+            boundaries,
+            &escape.bytes,
+        ))
+    }
 }
 
 // ============================================================================

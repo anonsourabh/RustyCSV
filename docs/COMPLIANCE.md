@@ -1,6 +1,6 @@
 # RustyCSV Compliance & Validation
 
-RustyCSV takes correctness seriously. With **147 tests** across five test suites, including industry-standard validation suites used by CSV parsers across multiple languages, RustyCSV is one of the most thoroughly tested CSV libraries available for Elixir.
+RustyCSV takes correctness seriously. With **233 tests** across multiple test suites, including industry-standard validation suites used by CSV parsers across multiple languages, RustyCSV is one of the most thoroughly tested CSV libraries available for Elixir.
 
 This document describes RFC 4180 compliance and the validation methodology.
 
@@ -127,7 +127,7 @@ A comprehensive edge case test suite inspired by PapaParse, covering malformed i
 
 ## Cross-Strategy Validation
 
-All parsing strategies must produce identical output for the same input. This is verified by running every test file through all four strategies:
+All parsing strategies must produce identical output for the same input. This is verified by running every test file through all six strategies:
 
 | Strategy | Description | Validates Against |
 |----------|-------------|-------------------|
@@ -135,6 +135,8 @@ All parsing strategies must produce identical output for the same input. This is
 | `:simd` | SIMD-accelerated via memchr | All test suites |
 | `:indexed` | Two-phase index-then-extract | All test suites |
 | `:parallel` | Multi-threaded via rayon | All test suites |
+| `:zero_copy` | Sub-binary references | All test suites |
+| `:streaming` | Stateful chunked parser | All test suites |
 
 ```elixir
 # From test/csv_spectrum_test.exs
@@ -211,7 +213,12 @@ test/fixtures/
 | csv-test-data | 17 | RFC 4180 compliance |
 | Edge cases | 53 | Stress testing and malformed input |
 | Encoding | 20 | UTF-16, UTF-32, Latin-1 conversion |
-| **Total** | **147** | |
+| Multi-separator | 19 | Multiple single-byte separator support |
+| Multi-byte separator | 16 | Multi-byte separator support (`::`, `||`, mixed) |
+| Multi-byte escape | 14 | Multi-byte escape support (`$$`) |
+| Native API | 40 | NIF-level separator/escape encoding |
+| NimbleCSV compat | 6 | NimbleCSV drop-in compatibility |
+| **Total** | **233** | |
 
 ---
 

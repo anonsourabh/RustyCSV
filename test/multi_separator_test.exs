@@ -22,6 +22,10 @@ defmodule MultiSeparatorTest do
     line_separator: "\n"
   )
 
+  # Define edge case parsers
+  RustyCSV.define(TestSingleSep, separator: ",", escape: "\"")
+  RustyCSV.define(TestSingleList, separator: [","], escape: "\"")
+
   describe "multi-separator parsing" do
     test "parses comma-separated values" do
       result = TestMultiSep.parse_string("a,b,c\n1,2,3\n", skip_headers: false)
@@ -151,13 +155,11 @@ defmodule MultiSeparatorTest do
   describe "edge cases" do
     test "single separator string still works" do
       # This should behave exactly like a regular single-separator parser
-      RustyCSV.define(TestSingleSep, separator: ",", escape: "\"")
       result = TestSingleSep.parse_string("a,b,c\n", skip_headers: false)
       assert result == [["a", "b", "c"]]
     end
 
     test "separator list with single element works" do
-      RustyCSV.define(TestSingleList, separator: [","], escape: "\"")
       result = TestSingleList.parse_string("a,b,c\n", skip_headers: false)
       assert result == [["a", "b", "c"]]
     end
@@ -168,10 +170,10 @@ defmodule MultiSeparatorTest do
       end
     end
 
-    test "raises on non-single-byte separator in list" do
-      assert_raise ArgumentError, ~r/single-byte/, fn ->
-        RustyCSV.define(TestMultiByte, separator: [",", "::"], escape: "\"")
-      end
+    test "multi-byte separator in list is now allowed" do
+      RustyCSV.define(TestMultiByteSep, separator: [",", "::"], escape: "\"")
+      result = TestMultiByteSep.parse_string("a,b::c\n", skip_headers: false)
+      assert result == [["a", "b", "c"]]
     end
 
     test "raises on invalid separator type" do

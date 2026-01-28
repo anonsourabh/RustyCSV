@@ -71,12 +71,18 @@ defmodule RustyCSV.Streaming do
   @typedoc "A parsed row (list of field binaries)"
   @type row :: [binary()]
 
-  @typedoc "Options for streaming functions"
+  @typedoc """
+  Options for streaming functions.
+
+  The `:separator` option accepts a binary (e.g., `<<?,>>` or `","`) or an
+  integer byte (e.g., `?,` or `9`). When called from a module defined via
+  `RustyCSV.define/2`, the separator is already normalized to a binary.
+  """
   @type stream_options :: [
           chunk_size: pos_integer(),
           batch_size: pos_integer(),
-          separator: binary(),
-          escape: non_neg_integer(),
+          separator: binary() | non_neg_integer() | [binary()],
+          escape: binary() | non_neg_integer(),
           encoding: RustyCSV.encoding(),
           bom: binary(),
           trim_bom: boolean()
@@ -300,16 +306,20 @@ defmodule RustyCSV.Streaming do
 
   ## Options
 
-    * `:separator` - Field separator byte. Defaults to `,` (44).
-    * `:escape` - Escape/quote byte. Defaults to `"` (34).
+    * `:separator` - Field separator. Accepts an integer byte (e.g., `9` for tab),
+      a binary (e.g., `"\\t"`, `"::"`), or a list of binaries (e.g., `[",", ";"]`).
+      Defaults to `","`.
+    * `:escape` - Escape/quote sequence. Accepts an integer byte (e.g., `34`) or
+      a binary (e.g., `"\""`, `"$$"`). Defaults to `"` (34).
 
   ## Examples
 
       RustyCSV.Streaming.parse_chunks(["a,b\\n1,", "2\\n3,4\\n"])
       #=> [["a", "b"], ["1", "2"], ["3", "4"]]
 
-      # TSV parsing
+      # TSV parsing (integer or binary separator)
       RustyCSV.Streaming.parse_chunks(["a\\tb\\n1\\t2\\n"], separator: 9)
+      RustyCSV.Streaming.parse_chunks(["a\\tb\\n1\\t2\\n"], separator: "\\t")
       #=> [["a", "b"], ["1", "2"]]
 
   """

@@ -7,15 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Multi-byte separator and escape support** - Separators and escape sequences are no longer
+  restricted to single bytes, completing NimbleCSV parity
+  - `separator: "::"` or `separator: "||"` — multi-byte separators now work
+  - `separator: [",", "::"]` — lists can mix single-byte and multi-byte separators
+  - `escape: "$$"` — multi-byte escape sequences now work
+  - Single-byte cases are unchanged — the existing SIMD-optimized code paths are
+    used when all separators and the escape are single bytes (zero performance regression)
+  - Multi-byte cases use a new general-purpose byte-by-byte parser
+  - All 6 strategies and streaming support multi-byte separators and escapes
+
 ### Added
 
-- **Multi-separator support** - Full NimbleCSV API compatibility for multiple separator characters
-  - `separator: [",", ";"]` - accepts a list of single-byte separator strings
+- **Multi-separator support** — multiple separator characters for NimbleCSV compatibility
+  - `separator: [",", ";"]` — accepts a list of separator strings
   - **Parsing**: Any separator in the list is recognized as a field delimiter
   - **Dumping**: Only the **first** separator is used for output (deterministic)
-  - Uses SIMD-optimized `memchr2`/`memchr3` for 2-3 separators, with fallback for 4+
-  - Works with all parsing strategies: `:simd`, `:basic`, `:indexed`, `:parallel`, `:zero_copy`
-  - Works with streaming parser
+  - Uses SIMD-optimized `memchr2`/`memchr3` for 2-3 single-byte separators, with fallback for 4+
+  - Works with all parsing strategies and streaming
   - Backward compatible: single separator string still works as before
 
 ## [0.2.0] - 2026-01-25

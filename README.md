@@ -3,7 +3,7 @@
 **Ultra-fast CSV parsing for Elixir.** A purpose-built Rust NIF with six parsing strategies, SIMD acceleration, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
 
 [![Hex.pm](https://img.shields.io/hexpm/v/rusty_csv.svg)](https://hex.pm/packages/rusty_csv)
-[![Tests](https://img.shields.io/badge/tests-168%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-233%20passed-brightgreen.svg)]()
 [![RFC 4180](https://img.shields.io/badge/RFC%204180-compliant-blue.svg)]()
 
 ## Why RustyCSV?
@@ -34,12 +34,12 @@
 | **SIMD acceleration** | ✅ via memchr | ❌ |
 | **Parallel parsing** | ✅ via rayon | ❌ |
 | **Streaming (bounded memory)** | ✅ | ❌ (requires full file in memory) |
-| **Multi-separator support** | ✅ `[",", ";"]` | ✅ |
+| **Multi-separator support** | ✅ `[",", ";"]`, `"::"` | ✅ |
 | **Encoding support** | ✅ UTF-8, UTF-16, Latin-1, UTF-32 | ✅ |
 | **Memory model** | ✅ Choice of copy or sub-binary | Sub-binary only |
 | **High-performance allocator** | ✅ mimalloc | System |
 | **Drop-in replacement** | ✅ Same API | - |
-| **RFC 4180 compliant** | ✅ 168 tests | ✅ |
+| **RFC 4180 compliant** | ✅ 233 tests | ✅ |
 | **Benchmark (7MB CSV)** | ~24ms | ~219ms |
 
 ## Purpose-Built for Elixir
@@ -191,8 +191,8 @@ MyApp.TSV.parse_string("a\tb\tc\n1\t2\t3\n")
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `:separator` | Field separator(s) - string or list of strings | `","` |
-| `:escape` | Quote character | `"\""` |
+| `:separator` | Field separator(s) — string or list of strings (multi-byte OK) | `","` |
+| `:escape` | Quote/escape sequence (multi-byte OK) | `"\""` |
 | `:line_separator` | Line ending for dumps | `"\r\n"` |
 | `:newlines` | Accepted line endings | `["\r\n", "\n"]` |
 | `:encoding` | Character encoding (see below) | `:utf8` |
@@ -219,6 +219,28 @@ MyApp.FlexibleCSV.parse_string("a,b;c\n1;2,3\n", skip_headers: false)
 # Dumping uses only the FIRST separator
 MyApp.FlexibleCSV.dump_to_iodata([["x", "y", "z"]]) |> IO.iodata_to_binary()
 #=> "x,y,z\n"
+```
+
+Separators and escape sequences can be multi-byte:
+
+```elixir
+# Double-colon separator
+RustyCSV.define(MyApp.DoubleColon,
+  separator: "::",
+  escape: "\""
+)
+
+# Multi-byte escape
+RustyCSV.define(MyApp.DollarEscape,
+  separator: ",",
+  escape: "$$"
+)
+
+# Mix single-byte and multi-byte separators
+RustyCSV.define(MyApp.Mixed,
+  separator: [",", "::"],
+  escape: "\""
+)
 ```
 
 ### Encoding Support
@@ -260,7 +282,10 @@ RustyCSV is **fully RFC 4180 compliant** and validated against industry-standard
 | Core + NimbleCSV compat | 36 | ✅ All pass |
 | Encoding (UTF-16, Latin-1, etc.) | 20 | ✅ All pass |
 | Multi-separator support | 19 | ✅ All pass |
-| **Total** | **168** | ✅ |
+| Multi-byte separator | 16 | ✅ All pass |
+| Multi-byte escape | 14 | ✅ All pass |
+| Native API separator/escape | 40 | ✅ All pass |
+| **Total** | **233** | ✅ |
 
 See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for full compliance details.
 
@@ -317,16 +342,17 @@ RustyCSV is built with a modular Rust architecture:
 
 ```
 native/rustycsv/src/
-├── lib.rs              # NIF entry points, mimalloc allocator
+├── lib.rs              # NIF entry points, separator/escape decoding, dispatch
 ├── core/
 │   ├── scanner.rs      # SIMD row/field scanning (memchr, memchr3)
 │   └── field.rs        # Zero-copy field extraction (Cow)
 ├── strategy/
-│   ├── direct.rs       # Basic + SIMD strategies
-│   ├── two_phase.rs    # Indexed strategy
-│   ├── streaming.rs    # Stateful streaming parser
-│   ├── parallel.rs     # Rayon-based parallel parsing
-│   └── zero_copy.rs    # Sub-binary reference parsing
+│   ├── direct.rs       # Basic + SIMD strategies (single-byte)
+│   ├── two_phase.rs    # Indexed strategy (single-byte)
+│   ├── streaming.rs    # Stateful streaming parser (single-byte)
+│   ├── parallel.rs     # Rayon-based parallel parsing (single-byte)
+│   ├── zero_copy.rs    # Sub-binary reference parsing (single-byte)
+│   └── general.rs      # Multi-byte separator/escape (all strategies)
 ├── term.rs             # BEAM term building (copy + sub-binary)
 └── resource.rs         # ResourceArc for streaming state
 ```
@@ -395,7 +421,7 @@ mix deps.get
 # Compile (includes Rust NIF)
 mix compile
 
-# Run tests (168 tests)
+# Run tests (233 tests)
 mix test
 
 # Run benchmarks

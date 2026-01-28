@@ -36,7 +36,7 @@ RustyCSV offers unmatched flexibility with six parsing strategies:
 
 ### Validated Correctness
 
-- **147 tests** covering RFC 4180, industry test suites, edge cases, and encodings
+- **233 tests** covering RFC 4180, industry test suites, edge cases, encodings, and multi-byte separators/escapes
 - **Cross-strategy validation** - All 6 strategies produce identical output
 - **NimbleCSV compatibility** - Verified identical behavior for all API functions
 
@@ -90,8 +90,8 @@ RustyCSV implements the complete NimbleCSV API:
 
 | Option | NimbleCSV | RustyCSV | Status |
 |--------|-----------|----------|--------|
-| `:separator` | ✅ Any | ✅ Any single-byte | ✅ |
-| `:escape` | ✅ Any | ✅ Any single-byte | ✅ |
+| `:separator` | ✅ Any | ✅ Any (single or multi-byte) | ✅ |
+| `:escape` | ✅ Any | ✅ Any (single or multi-byte) | ✅ |
 | `:line_separator` | ✅ | ✅ | ✅ |
 | `:newlines` | ✅ | ✅ | ✅ |
 | `:trim_bom` | ✅ | ✅ | ✅ |
@@ -161,20 +161,21 @@ Speed-sensitive  :zero_copy (sub-binaries, keeps input alive)
 
 ```
 native/rustycsv/src/
-├── lib.rs                 # NIF entry points, memory tracking, mimalloc
+├── lib.rs                 # NIF entry points, separator/escape decoding, dispatch
 ├── core/
 │   ├── mod.rs            # Re-exports
 │   ├── scanner.rs        # SIMD row/field boundary detection (memchr3)
 │   └── field.rs          # Field extraction, quote handling
 ├── strategy/
 │   ├── mod.rs            # Strategy exports
-│   ├── direct.rs         # A/B: Basic and SIMD strategies
-│   ├── two_phase.rs      # C: Index-then-extract
-│   ├── streaming.rs      # D: Stateful chunked parser
-│   ├── parallel.rs       # E: Rayon-based parallel
-│   └── zero_copy.rs      # F: Sub-binary boundary parsing
-├── term.rs               # Term building (copy + sub-binary)
-└── resource.rs           # ResourceArc for streaming parser
+│   ├── direct.rs         # A/B: Basic and SIMD strategies (single-byte fast path)
+│   ├── two_phase.rs      # C: Index-then-extract (single-byte fast path)
+│   ├── streaming.rs      # D: Stateful chunked parser (single-byte fast path)
+│   ├── parallel.rs       # E: Rayon-based parallel (single-byte fast path)
+│   ├── zero_copy.rs      # F: Sub-binary boundary parsing (single-byte fast path)
+│   └── general.rs        # Multi-byte separator/escape support (all strategies)
+├── term.rs               # Term building (copy + sub-binary, incl. multi-byte escape)
+└── resource.rs           # ResourceArc for streaming parser (single-byte + general)
 
 lib/
 ├── rusty_csv.ex          # Main module with define/2 macro, types, specs
@@ -249,22 +250,24 @@ Benefits: Better cache utilization, can skip rows, predictable memory.
 
 ### Strategy D: Streaming Parser
 
-Stateful parser wrapped in `ResourceArc` for NIF resource management:
+Stateful parser wrapped in `ResourceArc` for NIF resource management. The resource
+holds a `StreamingParserEnum` that dispatches between the single-byte fast path
+and the general multi-byte path:
 
 ```rust
-pub struct StreamingParser {
-    buffer: Vec<u8>,           // Holds incoming chunks
-    complete_rows: Vec<...>,   // Parsed rows ready to take
-    partial_row_start: usize,  // Where incomplete row begins
-    scan_pos: usize,           // Resume position for scanning
-    in_quotes: bool,           // Quote state across chunks
+pub enum StreamingParserEnum {
+    SingleByte(StreamingParser),
+    General(GeneralStreamingParser),
 }
 ```
+
+Both variants share the same interface (feed, take_rows, finalize, etc.) and are
+selected at creation time based on separator/escape lengths.
 
 Key features:
 - Owns data (`Vec<u8>`) because input chunks are temporary
 - Tracks `scan_pos` to resume parsing where it left off
-- Preserves `in_quotes` state for fields spanning chunks
+- Preserves quote state across chunks
 
 ### Strategy E: Parallel Parser
 
