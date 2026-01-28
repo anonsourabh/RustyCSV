@@ -415,6 +415,47 @@ defmodule RustyCSV.Native do
     do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
+  # Headers-to-Maps Extension
+  # ==========================================================================
+
+  @doc """
+  Parse CSV and return list of maps, dispatching to the specified strategy.
+
+  ## Parameters
+
+    * `input` - The CSV binary to parse
+    * `separator` - Separator(s) (see "Separator Format" above)
+    * `escape` - Escape sequence (see "Escape Format" above)
+    * `strategy` - Atom: `:basic`, `:simd`, `:indexed`, or `:zero_copy`
+    * `header_mode` - Atom `:true` (first row = keys) or list of key terms
+    * `skip_first` - Whether to skip the first row when using explicit keys
+
+  """
+  @spec parse_to_maps(binary(), separator(), escape(), atom(), atom() | list(), boolean()) ::
+          [map()]
+  def parse_to_maps(_input, _separator, _escape, _strategy, _header_mode, _skip_first),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Parse CSV in parallel and return list of maps.
+
+  Uses the rayon thread pool on a dirty CPU scheduler.
+
+  ## Parameters
+
+    * `input` - The CSV binary to parse
+    * `separator` - Separator(s) (see "Separator Format" above)
+    * `escape` - Escape sequence (see "Escape Format" above)
+    * `header_mode` - Atom `:true` (first row = keys) or list of key terms
+    * `skip_first` - Whether to skip the first row when using explicit keys
+
+  """
+  @spec parse_to_maps_parallel(binary(), separator(), escape(), atom() | list(), boolean()) ::
+          [map()]
+  def parse_to_maps_parallel(_input, _separator, _escape, _header_mode, _skip_first),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  # ==========================================================================
   # Memory Tracking (requires `memory_tracking` feature flag)
   # ==========================================================================
 

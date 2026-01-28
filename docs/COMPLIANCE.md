@@ -1,6 +1,6 @@
 # RustyCSV Compliance & Validation
 
-RustyCSV takes correctness seriously. With **233 tests** across multiple test suites, including industry-standard validation suites used by CSV parsers across multiple languages, RustyCSV is one of the most thoroughly tested CSV libraries available for Elixir.
+RustyCSV takes correctness seriously. With **330 tests** across multiple test suites, including industry-standard validation suites used by CSV parsers across multiple languages, RustyCSV is one of the most thoroughly tested CSV libraries available for Elixir.
 
 This document describes RFC 4180 compliance and the validation methodology.
 
@@ -14,7 +14,7 @@ RustyCSV.RFC4180 is fully compliant with [RFC 4180](https://tools.ietf.org/html/
 |---------|-------------|--------|
 | 2.1 | Records separated by line breaks (CRLF) | ✅ Accepts CRLF and LF; outputs CRLF |
 | 2.2 | Last record may or may not have trailing line break | ✅ |
-| 2.3 | Optional header line | ✅ Via `skip_headers` option |
+| 2.3 | Optional header line | ✅ Via `skip_headers` and `headers:` options |
 | 2.4 | Each record should have same number of fields | ✅ Parses variable-width rows |
 | 2.5 | Spaces are part of the field | ✅ Preserved exactly |
 | 2.6 | Fields may be enclosed in double quotes | ✅ |
@@ -249,7 +249,8 @@ test/fixtures/
 | Multi-byte escape | 14 | Multi-byte escape support (`$$`) |
 | Native API | 40 | NIF-level separator/escape encoding |
 | NimbleCSV compat | 6 | NimbleCSV drop-in compatibility |
-| **Total** | **233** | |
+| Headers-to-maps | 97 | `headers:` option, cross-strategy consistency, stream parity |
+| **Total** | **330** | |
 
 ---
 

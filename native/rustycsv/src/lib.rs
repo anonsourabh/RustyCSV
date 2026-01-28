@@ -8,7 +8,8 @@
 // E: Parallel parsing via rayon (parse_string_parallel)
 // F: Zero-copy sub-binary parsing (parse_string_zero_copy)
 
-use rustler::{Binary, Env, Error, NifResult, ResourceArc, Term};
+use rustler::{Binary, Env, Error, NewBinary, NifResult, ResourceArc, Term};
+use std::borrow::Cow;
 
 mod core;
 mod resource;
@@ -88,15 +89,17 @@ fn single_byte_seps(separators: &Separators) -> Vec<u8> {
 
 use resource::{StreamingParserRef, StreamingParserResource};
 use strategy::{
-    parse_csv, parse_csv_boundaries_general, parse_csv_boundaries_multi_sep,
+    contains_escape, parse_csv, parse_csv_boundaries_general, parse_csv_boundaries_multi_sep,
     parse_csv_boundaries_with_config, parse_csv_fast, parse_csv_fast_multi_sep,
     parse_csv_fast_with_config, parse_csv_general, parse_csv_indexed,
     parse_csv_indexed_general, parse_csv_indexed_multi_sep, parse_csv_indexed_with_config,
     parse_csv_multi_sep, parse_csv_parallel, parse_csv_parallel_general,
     parse_csv_parallel_multi_sep, parse_csv_parallel_with_config, parse_csv_with_config,
+    unescape_field_general,
 };
 use term::{
-    boundaries_to_term_hybrid, boundaries_to_term_hybrid_general, cow_rows_to_term,
+    boundaries_to_maps_hybrid, boundaries_to_maps_hybrid_general, boundaries_to_term_hybrid,
+    boundaries_to_term_hybrid_general, cow_rows_to_maps, cow_rows_to_term, owned_rows_to_maps,
     owned_rows_to_term,
 };
 
@@ -474,6 +477,305 @@ fn parse_string_zero_copy_with_config<'a>(
             boundaries,
             &escape.bytes,
         ))
+    }
+}
+
+// ============================================================================
+// Headers-to-Maps NIFs
+// ============================================================================
+
+use rustler::types::ListIterator;
+
+/// Header mode: either auto (first row = keys) or explicit key terms
+enum HeaderMode<'a> {
+    Auto,
+    Explicit(Vec<Term<'a>>),
+}
+
+/// Decode header_mode term: atom :true → Auto, list → Explicit(Vec<Term>)
+fn decode_header_mode<'a>(header_mode: Term<'a>) -> NifResult<HeaderMode<'a>> {
+    // Try atom :true
+    if let Ok(s) = header_mode.atom_to_string() {
+        if s == "true" {
+            return Ok(HeaderMode::Auto);
+        }
+        return Err(Error::BadArg);
+    }
+    // Try list of terms (strings or atoms)
+    if let Ok(iter) = header_mode.decode::<ListIterator<'a>>() {
+        let keys: Vec<Term<'a>> = iter.collect();
+        if keys.is_empty() {
+            return Err(Error::BadArg);
+        }
+        return Ok(HeaderMode::Explicit(keys));
+    }
+    Err(Error::BadArg)
+}
+
+/// Convert a Cow field to a binary term (for building key terms from first row)
+fn cow_field_to_binary_term<'a>(env: Env<'a>, field: &Cow<'_, [u8]>) -> Term<'a> {
+    let bytes = field.as_ref();
+    let mut binary = NewBinary::new(env, bytes.len());
+    binary.as_mut_slice().copy_from_slice(bytes);
+    binary.into()
+}
+
+/// Dispatch to Cow-returning parser based on strategy string
+fn dispatch_cow_parse<'a>(
+    bytes: &'a [u8],
+    separators: &Separators,
+    escape: &Escape,
+    strategy: &str,
+) -> Vec<Vec<Cow<'a, [u8]>>> {
+    if is_all_single_byte(separators, escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(separators);
+        match strategy {
+            "basic" => {
+                if sep_bytes.len() == 1 {
+                    parse_csv_with_config(bytes, sep_bytes[0], esc)
+                } else {
+                    parse_csv_multi_sep(bytes, &sep_bytes, esc)
+                }
+            }
+            "simd" => {
+                if sep_bytes.len() == 1 {
+                    parse_csv_fast_with_config(bytes, sep_bytes[0], esc)
+                } else {
+                    parse_csv_fast_multi_sep(bytes, &sep_bytes, esc)
+                }
+            }
+            "indexed" => {
+                if sep_bytes.len() == 1 {
+                    parse_csv_indexed_with_config(bytes, sep_bytes[0], esc)
+                } else {
+                    parse_csv_indexed_multi_sep(bytes, &sep_bytes, esc)
+                }
+            }
+            _ => unreachable!(),
+        }
+    } else {
+        match strategy {
+            "basic" | "simd" => parse_csv_general(bytes, &separators.patterns, &escape.bytes),
+            "indexed" => {
+                parse_csv_indexed_general(bytes, &separators.patterns, &escape.bytes)
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Parse CSV and return list of maps. Dispatches to strategy internally.
+#[rustler::nif]
+fn parse_to_maps<'a>(
+    env: Env<'a>,
+    input: Binary<'a>,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
+    strategy: Term<'a>,
+    header_mode_term: Term<'a>,
+    skip_first: bool,
+) -> NifResult<Term<'a>> {
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
+    let header_mode = decode_header_mode(header_mode_term)?;
+    let strategy_str = strategy
+        .atom_to_string()
+        .map_err(|_| Error::BadArg)?;
+    let bytes = input.as_slice();
+
+    match strategy_str.as_str() {
+        "basic" | "simd" | "indexed" => {
+            let all_rows = dispatch_cow_parse(bytes, &separators, &escape, &strategy_str);
+            if all_rows.is_empty() {
+                return Ok(Term::list_new_empty(env));
+            }
+
+            match header_mode {
+                HeaderMode::Auto => {
+                    // First row = keys
+                    let key_terms: Vec<Term<'a>> = all_rows[0]
+                        .iter()
+                        .map(|f| cow_field_to_binary_term(env, f))
+                        .collect();
+                    Ok(cow_rows_to_maps(env, &key_terms, &all_rows[1..]))
+                }
+                HeaderMode::Explicit(key_terms) => {
+                    let start = if skip_first { 1 } else { 0 };
+                    Ok(cow_rows_to_maps(env, &key_terms, &all_rows[start..]))
+                }
+            }
+        }
+        "zero_copy" => {
+            if is_all_single_byte(&separators, &escape) {
+                let esc = escape.bytes[0];
+                let sep_bytes = single_byte_seps(&separators);
+                let all_boundaries = if sep_bytes.len() == 1 {
+                    parse_csv_boundaries_with_config(bytes, sep_bytes[0], esc)
+                } else {
+                    parse_csv_boundaries_multi_sep(bytes, &sep_bytes, esc)
+                };
+
+                if all_boundaries.is_empty() {
+                    return Ok(Term::list_new_empty(env));
+                }
+
+                match header_mode {
+                    HeaderMode::Auto => {
+                        // Extract first row as key strings (must copy)
+                        let input_bytes = input.as_slice();
+                        let key_terms: Vec<Term<'a>> = all_boundaries[0]
+                            .iter()
+                            .map(|&(start, end)| {
+                                let field = &input_bytes[start..end];
+                                // Strip quotes if present
+                                let content = if field.len() >= 2
+                                    && field[0] == esc
+                                    && field[field.len() - 1] == esc
+                                {
+                                    let inner = &field[1..field.len() - 1];
+                                    if inner.contains(&esc) {
+                                        term::unescape_field(inner, esc)
+                                    } else {
+                                        inner.to_vec()
+                                    }
+                                } else {
+                                    field.to_vec()
+                                };
+                                let mut binary = NewBinary::new(env, content.len());
+                                binary.as_mut_slice().copy_from_slice(&content);
+                                let t: Term = binary.into();
+                                t
+                            })
+                            .collect();
+                        Ok(boundaries_to_maps_hybrid(
+                            env,
+                            input,
+                            &key_terms,
+                            &all_boundaries[1..],
+                            esc,
+                        ))
+                    }
+                    HeaderMode::Explicit(key_terms) => {
+                        let start = if skip_first { 1 } else { 0 };
+                        Ok(boundaries_to_maps_hybrid(
+                            env,
+                            input,
+                            &key_terms,
+                            &all_boundaries[start..],
+                            esc,
+                        ))
+                    }
+                }
+            } else {
+                // Multi-byte escape zero_copy
+                let all_boundaries =
+                    parse_csv_boundaries_general(bytes, &separators.patterns, &escape.bytes);
+
+                if all_boundaries.is_empty() {
+                    return Ok(Term::list_new_empty(env));
+                }
+
+                match header_mode {
+                    HeaderMode::Auto => {
+                        let input_bytes = input.as_slice();
+                        let esc = &escape.bytes;
+                        let esc_len = esc.len();
+                        let key_terms: Vec<Term<'a>> = all_boundaries[0]
+                            .iter()
+                            .map(|&(start, end)| {
+                                let field = &input_bytes[start..end];
+                                let content = if field.len() >= 2 * esc_len
+                                    && field[..esc_len] == *esc.as_slice()
+                                    && field[field.len() - esc_len..] == *esc.as_slice()
+                                {
+                                    let inner = &field[esc_len..field.len() - esc_len];
+                                    if contains_escape(inner, esc) {
+                                        unescape_field_general(inner, esc)
+                                    } else {
+                                        inner.to_vec()
+                                    }
+                                } else {
+                                    field.to_vec()
+                                };
+                                let mut binary = NewBinary::new(env, content.len());
+                                binary.as_mut_slice().copy_from_slice(&content);
+                                let t: Term = binary.into();
+                                t
+                            })
+                            .collect();
+                        Ok(boundaries_to_maps_hybrid_general(
+                            env,
+                            input,
+                            &key_terms,
+                            &all_boundaries[1..],
+                            &escape.bytes,
+                        ))
+                    }
+                    HeaderMode::Explicit(key_terms) => {
+                        let start = if skip_first { 1 } else { 0 };
+                        Ok(boundaries_to_maps_hybrid_general(
+                            env,
+                            input,
+                            &key_terms,
+                            &all_boundaries[start..],
+                            &escape.bytes,
+                        ))
+                    }
+                }
+            }
+        }
+        _ => Err(Error::BadArg),
+    }
+}
+
+/// Parallel variant for parse_to_maps on dirty CPU scheduler
+#[rustler::nif(schedule = "DirtyCpu")]
+fn parse_to_maps_parallel<'a>(
+    env: Env<'a>,
+    input: Binary<'a>,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
+    header_mode_term: Term<'a>,
+    skip_first: bool,
+) -> NifResult<Term<'a>> {
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
+    let header_mode = decode_header_mode(header_mode_term)?;
+    let bytes = input.as_slice();
+
+    let all_rows = if is_all_single_byte(&separators, &escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(&separators);
+        if sep_bytes.len() == 1 {
+            parse_csv_parallel_with_config(bytes, sep_bytes[0], esc)
+        } else {
+            parse_csv_parallel_multi_sep(bytes, &sep_bytes, esc)
+        }
+    } else {
+        parse_csv_parallel_general(bytes, &separators.patterns, &escape.bytes)
+    };
+
+    if all_rows.is_empty() {
+        return Ok(Term::list_new_empty(env));
+    }
+
+    match header_mode {
+        HeaderMode::Auto => {
+            let key_terms: Vec<Term<'a>> = all_rows[0]
+                .iter()
+                .map(|f| {
+                    let mut binary = NewBinary::new(env, f.len());
+                    binary.as_mut_slice().copy_from_slice(f);
+                    binary.into()
+                })
+                .collect();
+            Ok(owned_rows_to_maps(env, &key_terms, &all_rows[1..]))
+        }
+        HeaderMode::Explicit(key_terms) => {
+            let start = if skip_first { 1 } else { 0 };
+            Ok(owned_rows_to_maps(env, &key_terms, &all_rows[start..]))
+        }
     }
 }
 

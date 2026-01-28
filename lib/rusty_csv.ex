@@ -73,8 +73,57 @@ defmodule RustyCSV do
     * `to_line_stream/1` - Convert arbitrary chunks to lines
     * `options/0` - Return module configuration
 
-  The only behavioral difference is that RustyCSV adds the `:strategy` option
-  for selecting the parsing approach.
+  RustyCSV extends NimbleCSV with two additional options:
+
+    * `:strategy` - Select the parsing approach (`:simd`, `:basic`, `:indexed`,
+      `:parallel`, `:zero_copy`)
+    * `:headers` - Return rows as maps instead of lists
+
+  ## Headers-to-Maps
+
+  Use the `:headers` option to get maps instead of lists:
+
+      CSV.parse_string("name,age\njohn,27\n", headers: true)
+      #=> [%{"name" => "john", "age" => "27"}]
+
+      CSV.parse_string("name,age\njohn,27\n", headers: [:name, :age])
+      #=> [%{name: "john", age: "27"}]
+
+      CSV.parse_string("name,age\njohn,27\n", headers: ["n", "a"])
+      #=> [%{"n" => "john", "a" => "27"}]
+
+  Streaming also supports headers:
+
+      "huge.csv"
+      |> File.stream!()
+      |> CSV.parse_stream(headers: true)
+      |> Stream.each(&process_map/1)
+      |> Stream.run()
+
+  ### How `:headers` interacts with `:skip_headers`
+
+  With `headers: true`, the first row is always consumed as keys — `:skip_headers`
+  has no effect.
+
+  With `headers: [keys]`, the `:skip_headers` option controls whether the first
+  row is skipped (default: `true`). Most CSV files have a header row, so skipping
+  it avoids mapping the header row itself into a map. If your file has no header
+  row, pass `skip_headers: false`:
+
+      # File with header row (typical) — first row skipped by default
+      CSV.parse_string("name,age\njohn,27\n", headers: [:n, :a])
+      #=> [%{n: "john", a: "27"}]
+
+      # File without header row — include all rows
+      CSV.parse_string("john,27\njane,30\n", headers: [:n, :a], skip_headers: false)
+      #=> [%{n: "john", a: "27"}, %{n: "jane", a: "30"}]
+
+  ### Edge cases
+
+    * Fewer columns than keys — missing values are `nil`
+    * More columns than keys — extra columns are ignored
+    * Duplicate headers — last column wins
+    * Empty header field — key is `""`
 
   ## Multi-Separator Support
 
@@ -207,6 +256,13 @@ defmodule RustyCSV do
       * `:indexed` - Two-phase index-then-extract
       * `:parallel` - Multi-threaded via rayon
       * `:zero_copy` - Sub-binary references (keeps parent binary alive)
+    * `:headers` - Controls header handling. Defaults to `false`.
+      * `false` - Return rows as lists (default behavior)
+      * `true` - Use first row as string keys, return list of maps.
+        `:skip_headers` is ignored (first row is always consumed as keys).
+      * list of atoms or strings - Use as explicit keys, return list of maps.
+        The first row is skipped by default (`:skip_headers` applies). Pass
+        `skip_headers: false` if the file has no header row.
 
   ## Streaming Options
 
@@ -217,6 +273,7 @@ defmodule RustyCSV do
   @type parse_options :: [
           skip_headers: boolean(),
           strategy: strategy(),
+          headers: boolean() | [atom() | String.t()],
           chunk_size: pos_integer(),
           batch_size: pos_integer()
         ]
@@ -675,23 +732,73 @@ defmodule RustyCSV do
 
         * `:skip_headers` - When `true`, skips the first row. Defaults to `true`.
         * `:strategy` - The parsing strategy. Defaults to `#{inspect(@default_strategy)}`.
+        * `:headers` - Controls header handling. Defaults to `false`.
+          * `false` - Return rows as lists (default behavior)
+          * `true` - Use first row as string keys, return maps.
+            `:skip_headers` is ignored.
+          * `[atom | string, ...]` - Use explicit keys, return maps.
+            First row skipped by default; pass `skip_headers: false` if no header row.
       #{unquote(encoding_doc)}
       """
       @impl RustyCSV
-      @spec parse_string(binary(), RustyCSV.parse_options()) :: RustyCSV.rows()
+      @spec parse_string(binary(), RustyCSV.parse_options()) :: RustyCSV.rows() | [map()]
       def parse_string(string, opts \\ [])
 
       def parse_string(string, opts) when is_binary(string) and is_list(opts) do
-        strategy = Keyword.get(opts, :strategy, @default_strategy)
-        skip_headers = Keyword.get(opts, :skip_headers, true)
+        headers = Keyword.get(opts, :headers, false)
 
-        string = string |> maybe_trim_bom() |> maybe_to_utf8()
-        rows = do_parse_string(string, strategy)
+        case headers do
+          false ->
+            # Existing path — COMPLETELY UNCHANGED
+            strategy = Keyword.get(opts, :strategy, @default_strategy)
+            skip_headers = Keyword.get(opts, :skip_headers, true)
 
-        case {skip_headers, rows} do
-          {true, [_ | tail]} -> tail
-          _ -> rows
+            string = string |> maybe_trim_bom() |> maybe_to_utf8()
+            rows = do_parse_string(string, strategy)
+
+            case {skip_headers, rows} do
+              {true, [_ | tail]} -> tail
+              _ -> rows
+            end
+
+          true ->
+            # First row = keys, Rust interning
+            strategy = Keyword.get(opts, :strategy, @default_strategy)
+            string = string |> maybe_trim_bom() |> maybe_to_utf8()
+            do_parse_to_maps(string, strategy, true, true)
+
+          header_list when is_list(header_list) ->
+            # Explicit keys
+            strategy = Keyword.get(opts, :strategy, @default_strategy)
+            skip_headers = Keyword.get(opts, :skip_headers, true)
+            string = string |> maybe_trim_bom() |> maybe_to_utf8()
+            do_parse_to_maps(string, strategy, header_list, skip_headers)
+
+          other ->
+            raise ArgumentError,
+                  "invalid :headers option, expected false, true, or a list of keys, got: #{inspect(other)}"
         end
+      end
+
+      defp do_parse_to_maps(string, :parallel, header_mode, skip_first) do
+        RustyCSV.Native.parse_to_maps_parallel(
+          string,
+          @separator_binaries,
+          @escape_binary,
+          header_mode,
+          skip_first
+        )
+      end
+
+      defp do_parse_to_maps(string, strategy, header_mode, skip_first) do
+        RustyCSV.Native.parse_to_maps(
+          string,
+          @separator_binaries,
+          @escape_binary,
+          strategy,
+          header_mode,
+          skip_first
+        )
       end
     end
   end
@@ -768,12 +875,26 @@ defmodule RustyCSV do
     quote do
       @doc """
       Lazily parses a stream of CSV data into a stream of rows.
+
+      ## Options
+
+        * `:skip_headers` - When `true`, skips the first row. Defaults to `true`.
+        * `:headers` - Controls header handling. Defaults to `false`.
+          * `false` - Return rows as lists (default behavior)
+          * `true` - Use first row as string keys, return maps.
+            `:skip_headers` is ignored.
+          * `[atom | string, ...]` - Use explicit keys, return maps.
+            First row skipped by default; pass `skip_headers: false` if no header row.
+        * `:chunk_size` - Bytes per IO read. Defaults to `65536`.
+        * `:batch_size` - Rows per batch. Defaults to `1000`.
+
       """
       @impl RustyCSV
       @spec parse_stream(Enumerable.t(), RustyCSV.parse_options()) :: Enumerable.t()
       def parse_stream(stream, opts \\ [])
 
       def parse_stream(stream, opts) when is_list(opts) do
+        headers = Keyword.get(opts, :headers, false)
         skip_headers = Keyword.get(opts, :skip_headers, true)
         chunk_size = Keyword.get(opts, :chunk_size, 64 * 1024)
         batch_size = Keyword.get(opts, :batch_size, 1000)
@@ -789,11 +910,47 @@ defmodule RustyCSV do
             trim_bom: @trim_bom
           )
 
-        if skip_headers do
-          Stream.drop(result_stream, 1)
-        else
-          result_stream
+        case headers do
+          false ->
+            if skip_headers do
+              Stream.drop(result_stream, 1)
+            else
+              result_stream
+            end
+
+          true ->
+            # First row = keys, convert remaining to maps
+            Stream.transform(result_stream, :no_header, fn
+              row, :no_header ->
+                {[], {:header, row, length(row)}}
+
+              row, {:header, _keys, _num_keys} = state ->
+                {[zip_to_map(state, row)], state}
+            end)
+
+          header_list when is_list(header_list) ->
+            num_keys = length(header_list)
+            state = {:header, header_list, num_keys}
+            base = if skip_headers, do: Stream.drop(result_stream, 1), else: result_stream
+            Stream.map(base, &zip_to_map(state, &1))
+
+          other ->
+            raise ArgumentError,
+                  "invalid :headers option, expected false, true, or a list of keys, got: #{inspect(other)}"
         end
+      end
+
+      defp zip_to_map({:header, keys, num_keys}, row) do
+        row_len = length(row)
+
+        padded =
+          cond do
+            row_len == num_keys -> row
+            row_len < num_keys -> row ++ List.duplicate(nil, num_keys - row_len)
+            true -> Enum.take(row, num_keys)
+          end
+
+        keys |> Enum.zip(padded) |> Map.new()
       end
     end
   end

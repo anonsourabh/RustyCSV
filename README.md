@@ -3,7 +3,7 @@
 **Ultra-fast CSV parsing for Elixir.** A purpose-built Rust NIF with six parsing strategies, SIMD acceleration, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
 
 [![Hex.pm](https://img.shields.io/hexpm/v/rusty_csv.svg)](https://hex.pm/packages/rusty_csv)
-[![Tests](https://img.shields.io/badge/tests-233%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-330%20passed-brightgreen.svg)]()
 [![RFC 4180](https://img.shields.io/badge/RFC%204180-compliant-blue.svg)]()
 
 ## Why RustyCSV?
@@ -39,7 +39,8 @@
 | **Memory model** | ✅ Choice of copy or sub-binary | Sub-binary only |
 | **High-performance allocator** | ✅ mimalloc | System |
 | **Drop-in replacement** | ✅ Same API | - |
-| **RFC 4180 compliant** | ✅ 233 tests | ✅ |
+| **Headers-to-maps** | ✅ `headers: true` or explicit keys | ❌ |
+| **RFC 4180 compliant** | ✅ 330 tests | ✅ |
 | **Benchmark (7MB CSV)** | ~24ms | ~219ms |
 
 ## Purpose-Built for Elixir
@@ -110,6 +111,14 @@ CSV.parse_string(csv, skip_headers: false)
 |> Stream.each(&process_row/1)
 |> Stream.run()
 
+# Parse to maps with headers
+CSV.parse_string("name,age\njohn,27\njane,30\n", headers: true)
+#=> [%{"name" => "john", "age" => "27"}, %{"name" => "jane", "age" => "30"}]
+
+# With atom keys
+CSV.parse_string("name,age\njohn,27\n", headers: [:name, :age])
+#=> [%{name: "john", age: "27"}]
+
 # Dump back to CSV
 CSV.dump_to_iodata([["name", "age"], ["john", "27"]])
 #=> "name,age\r\njohn,27\r\n"
@@ -131,8 +140,8 @@ All NimbleCSV functions are supported:
 
 | Function | Description |
 |----------|-------------|
-| `parse_string/2` | Parse CSV string to list of rows |
-| `parse_stream/2` | Lazily parse a stream (bounded memory) |
+| `parse_string/2` | Parse CSV string to list of rows (or maps with `headers:`) |
+| `parse_stream/2` | Lazily parse a stream (or maps with `headers:`) |
 | `parse_enumerable/2` | Parse any enumerable |
 | `dump_to_iodata/1` | Convert rows to iodata |
 | `dump_to_stream/1` | Lazily convert rows to iodata stream |
@@ -243,6 +252,35 @@ RustyCSV.define(MyApp.Mixed,
 )
 ```
 
+### Headers-to-Maps
+
+Return rows as maps instead of lists using the `:headers` option:
+
+```elixir
+# First row becomes string keys
+CSV.parse_string("name,age\njohn,27\njane,30\n", headers: true)
+#=> [%{"name" => "john", "age" => "27"}, %{"name" => "jane", "age" => "30"}]
+
+# Explicit atom keys (first row skipped by default)
+CSV.parse_string("name,age\njohn,27\n", headers: [:name, :age])
+#=> [%{name: "john", age: "27"}]
+
+# Explicit string keys
+CSV.parse_string("name,age\njohn,27\n", headers: ["n", "a"])
+#=> [%{"n" => "john", "a" => "27"}]
+
+# Works with streaming too
+"huge.csv"
+|> File.stream!()
+|> CSV.parse_stream(headers: true)
+|> Stream.each(&process_map/1)
+|> Stream.run()
+```
+
+Edge cases: fewer columns than headers fills with `nil`, extra columns are ignored, duplicate headers use last value, empty headers become `""`.
+
+Key interning is done Rust-side for `parse_string` — header terms are allocated once and reused across all rows. Streaming uses Elixir-side `Stream.transform` for map conversion.
+
 ### Encoding Support
 
 RustyCSV supports character encoding conversion, matching NimbleCSV's encoding options:
@@ -285,7 +323,8 @@ RustyCSV is **fully RFC 4180 compliant** and validated against industry-standard
 | Multi-byte separator | 16 | ✅ All pass |
 | Multi-byte escape | 14 | ✅ All pass |
 | Native API separator/escape | 40 | ✅ All pass |
-| **Total** | **233** | ✅ |
+| Headers-to-maps | 97 | ✅ All pass |
+| **Total** | **330** | ✅ |
 
 See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for full compliance details.
 
@@ -421,7 +460,7 @@ mix deps.get
 # Compile (includes Rust NIF)
 mix compile
 
-# Run tests (233 tests)
+# Run tests (330 tests)
 mix test
 
 # Run benchmarks

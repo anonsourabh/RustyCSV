@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Headers-to-maps** — return rows as Elixir maps instead of lists
+  - `headers: true` — first row becomes string keys
+  - `headers: [:name, :age]` — explicit atom keys
+  - `headers: ["n", "a"]` — explicit string keys
+  - Works with `parse_string/2` (Rust-side map construction) and `parse_stream/2`
+    (Elixir-side `Stream.transform`)
+  - Rust-side key interning: header terms allocated once and reused across all rows
+  - Edge cases: fewer columns → `nil`, extra columns → ignored, duplicate headers → last wins
+  - All 5 batch strategies and streaming supported
+  - 97 new tests including cross-strategy consistency and parse_string/parse_stream agreement
+
+- **Multi-separator support** — multiple separator characters for NimbleCSV compatibility
+  - `separator: [",", ";"]` — accepts a list of separator strings
+  - **Parsing**: Any separator in the list is recognized as a field delimiter
+  - **Dumping**: Only the **first** separator is used for output (deterministic)
+  - Uses SIMD-optimized `memchr2`/`memchr3` for 2-3 single-byte separators, with fallback for 4+
+  - Works with all parsing strategies and streaming
+  - Backward compatible: single separator string still works as before
+
 ### Fixed
 
 - **Multi-byte separator and escape support** - Separators and escape sequences are no longer
@@ -18,16 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     used when all separators and the escape are single bytes (zero performance regression)
   - Multi-byte cases use a new general-purpose byte-by-byte parser
   - All 6 strategies and streaming support multi-byte separators and escapes
-
-### Added
-
-- **Multi-separator support** — multiple separator characters for NimbleCSV compatibility
-  - `separator: [",", ";"]` — accepts a list of separator strings
-  - **Parsing**: Any separator in the list is recognized as a field delimiter
-  - **Dumping**: Only the **first** separator is used for output (deterministic)
-  - Uses SIMD-optimized `memchr2`/`memchr3` for 2-3 single-byte separators, with fallback for 4+
-  - Works with all parsing strategies and streaming
-  - Backward compatible: single separator string still works as before
 
 ## [0.2.0] - 2026-01-25
 

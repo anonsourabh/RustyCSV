@@ -36,7 +36,7 @@ RustyCSV offers unmatched flexibility with six parsing strategies:
 
 ### Validated Correctness
 
-- **233 tests** covering RFC 4180, industry test suites, edge cases, encodings, and multi-byte separators/escapes
+- **330 tests** covering RFC 4180, industry test suites, edge cases, encodings, multi-byte separators/escapes, and headers-to-maps
 - **Cross-strategy validation** - All 6 strategies produce identical output
 - **NimbleCSV compatibility** - Verified identical behavior for all API functions
 
@@ -115,12 +115,19 @@ alias RustyCSV.RFC4180, as: CSV
 
 ### RustyCSV Extensions
 
-RustyCSV adds one additional option not in NimbleCSV:
+RustyCSV adds options not in NimbleCSV:
 
 ```elixir
 # Choose parsing strategy (RustyCSV only)
 CSV.parse_string(data, strategy: :parallel)
 CSV.parse_string(data, strategy: :zero_copy)
+
+# Return maps instead of lists (RustyCSV only)
+CSV.parse_string(data, headers: true)
+#=> [%{"name" => "john", "age" => "27"}]
+
+CSV.parse_string(data, headers: [:name, :age])
+#=> [%{name: "john", age: "27"}]
 ```
 
 ## Parsing Strategies
@@ -174,7 +181,7 @@ native/rustycsv/src/
 │   ├── parallel.rs       # E: Rayon-based parallel (single-byte fast path)
 │   ├── zero_copy.rs      # F: Sub-binary boundary parsing (single-byte fast path)
 │   └── general.rs        # Multi-byte separator/escape support (all strategies)
-├── term.rs               # Term building (copy + sub-binary, incl. multi-byte escape)
+├── term.rs               # Term building (lists + maps, copy + sub-binary, multi-byte escape)
 └── resource.rs           # ResourceArc for streaming parser (single-byte + general)
 
 lib/
@@ -305,6 +312,29 @@ fn field_to_term_hybrid(env, input_term, start, end, escape) -> Term {
 - Quoted with escapes → copy and unescape (must allocate)
 
 **Trade-off**: Sub-binaries keep the parent binary alive until all field references are garbage collected.
+
+### Headers-to-Maps
+
+Two dedicated NIFs (`parse_to_maps`, `parse_to_maps_parallel`) return rows as Elixir maps instead of lists. They reuse all existing parsing strategy code — only the term conversion layer differs.
+
+**Architecture:**
+```
+headers: false (default)  →  existing NIFs  →  cow_rows_to_term (list of lists)
+headers: true/[...]       →  new NIFs       →  cow_rows_to_maps (list of maps)
+```
+
+**Key interning**: Header terms are allocated once in Rust and reused for every row, avoiding repeated binary allocation for map keys.
+
+**Header modes**:
+- `headers: true` — first CSV row parsed as string keys, remaining rows become maps
+- `headers: [atoms/strings]` — explicit key terms passed from Elixir, optionally skipping the first row
+
+**Streaming**: Uses Elixir-side `Stream.transform` for map conversion rather than a new NIF, since the streaming parser already yields one row at a time and the map wrapping overhead is negligible.
+
+**Edge case handling** (all in Rust):
+- Fewer columns than keys → `nil` fill
+- More columns than keys → extra columns ignored
+- Duplicate keys → last value wins (incremental map building fallback)
 
 ---
 
