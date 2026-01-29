@@ -176,10 +176,10 @@ defmodule MultiSeparatorTest do
       assert result == [["a", "b", "c"]]
     end
 
-    test "raises on invalid separator type" do
-      assert_raise ArgumentError, ~r/string or list/, fn ->
-        RustyCSV.define(TestInvalid, separator: 44, escape: "\"")
-      end
+    test "accepts integer codepoint as separator" do
+      RustyCSV.define(TestIntSep, separator: 44, escape: "\"")
+      result = TestIntSep.parse_string("a,b\n", skip_headers: false)
+      assert result == [["a", "b"]]
     end
   end
 end

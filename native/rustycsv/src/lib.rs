@@ -85,14 +85,40 @@ fn single_byte_seps(separators: &Separators) -> Vec<u8> {
     separators.patterns.iter().map(|p| p[0]).collect()
 }
 
+use core::Newlines;
+
+/// Decode newlines from a Term.
+/// Accepts: atom :default → default newlines, or list of binaries → custom newlines
+fn decode_newlines<'a>(term: Term<'a>) -> NifResult<Newlines> {
+    // Try atom :default
+    if let Ok(s) = term.atom_to_string() {
+        if s == "default" {
+            return Ok(Newlines::default_newlines());
+        }
+        return Err(Error::BadArg);
+    }
+    // Try list of binaries
+    if let Ok(list) = term.decode::<Vec<Binary<'a>>>() {
+        let patterns: Vec<Vec<u8>> = list.iter().map(|b| b.as_slice().to_vec()).collect();
+        if patterns.is_empty() || patterns.iter().any(|p| p.is_empty()) {
+            return Err(Error::BadArg);
+        }
+        return Ok(Newlines::custom(patterns));
+    }
+    Err(Error::BadArg)
+}
+
 use resource::{StreamingParserRef, StreamingParserResource};
 use strategy::{
-    contains_escape, parse_csv, parse_csv_boundaries_general, parse_csv_boundaries_multi_sep,
+    contains_escape, parse_csv, parse_csv_boundaries_general,
+    parse_csv_boundaries_general_with_newlines, parse_csv_boundaries_multi_sep,
     parse_csv_boundaries_with_config, parse_csv_fast, parse_csv_fast_multi_sep,
-    parse_csv_fast_with_config, parse_csv_general, parse_csv_indexed, parse_csv_indexed_general,
+    parse_csv_fast_with_config, parse_csv_general, parse_csv_general_with_newlines,
+    parse_csv_indexed, parse_csv_indexed_general, parse_csv_indexed_general_with_newlines,
     parse_csv_indexed_multi_sep, parse_csv_indexed_with_config, parse_csv_multi_sep,
-    parse_csv_parallel, parse_csv_parallel_general, parse_csv_parallel_multi_sep,
-    parse_csv_parallel_with_config, parse_csv_with_config, unescape_field_general,
+    parse_csv_parallel, parse_csv_parallel_general, parse_csv_parallel_general_with_newlines,
+    parse_csv_parallel_multi_sep, parse_csv_parallel_with_config, parse_csv_with_config,
+    unescape_field_general,
 };
 use term::{
     boundaries_to_maps_hybrid, boundaries_to_maps_hybrid_general, boundaries_to_term_hybrid,
@@ -221,17 +247,25 @@ fn parse_string<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     Ok(cow_rows_to_term(env, rows))
 }
 
-/// Parse CSV with configurable separator(s) and escape
+/// Parse CSV with configurable separator(s), escape, and newlines
 #[rustler::nif]
 fn parse_string_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
     sep_term: Term<'a>,
     esc_term: Term<'a>,
+    newlines_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
+    let newlines = decode_newlines(newlines_term)?;
     let bytes = input.as_slice();
+
+    if !newlines.is_default {
+        let rows =
+            parse_csv_general_with_newlines(bytes, &separators.patterns, &escape.bytes, &newlines);
+        return Ok(cow_rows_to_term(env, rows));
+    }
 
     let rows = if is_all_single_byte(&separators, &escape) {
         let esc = escape.bytes[0];
@@ -259,17 +293,25 @@ fn parse_string_fast<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>>
     Ok(cow_rows_to_term(env, rows))
 }
 
-/// Parse using SIMD with configurable separator(s) and escape
+/// Parse using SIMD with configurable separator(s), escape, and newlines
 #[rustler::nif]
 fn parse_string_fast_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
     sep_term: Term<'a>,
     esc_term: Term<'a>,
+    newlines_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
+    let newlines = decode_newlines(newlines_term)?;
     let bytes = input.as_slice();
+
+    if !newlines.is_default {
+        let rows =
+            parse_csv_general_with_newlines(bytes, &separators.patterns, &escape.bytes, &newlines);
+        return Ok(cow_rows_to_term(env, rows));
+    }
 
     let rows = if is_all_single_byte(&separators, &escape) {
         let esc = escape.bytes[0];
@@ -297,17 +339,29 @@ fn parse_string_indexed<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'
     Ok(cow_rows_to_term(env, rows))
 }
 
-/// Parse using two-phase with configurable separator(s) and escape
+/// Parse using two-phase with configurable separator(s), escape, and newlines
 #[rustler::nif]
 fn parse_string_indexed_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
     sep_term: Term<'a>,
     esc_term: Term<'a>,
+    newlines_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
+    let newlines = decode_newlines(newlines_term)?;
     let bytes = input.as_slice();
+
+    if !newlines.is_default {
+        let rows = parse_csv_indexed_general_with_newlines(
+            bytes,
+            &separators.patterns,
+            &escape.bytes,
+            &newlines,
+        );
+        return Ok(cow_rows_to_term(env, rows));
+    }
 
     let rows = if is_all_single_byte(&separators, &escape) {
         let esc = escape.bytes[0];
@@ -333,14 +387,27 @@ fn streaming_new() -> StreamingParserRef {
     ResourceArc::new(StreamingParserResource::new())
 }
 
-/// Create a new streaming parser with configurable separator(s) and escape
+/// Create a new streaming parser with configurable separator(s), escape, and newlines
 #[rustler::nif]
 fn streaming_new_with_config<'a>(
     sep_term: Term<'a>,
     esc_term: Term<'a>,
+    newlines_term: Term<'a>,
 ) -> NifResult<StreamingParserRef> {
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
+    let newlines = decode_newlines(newlines_term)?;
+
+    if !newlines.is_default {
+        return Ok(ResourceArc::new(
+            StreamingParserResource::with_general_newlines(
+                separators.patterns,
+                escape.bytes,
+                newlines,
+            ),
+        ));
+    }
+
     Ok(if is_all_single_byte(&separators, &escape) {
         let esc = escape.bytes[0];
         let sep_bytes = single_byte_seps(&separators);
@@ -409,17 +476,29 @@ fn parse_string_parallel<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<
     Ok(owned_rows_to_term(env, rows))
 }
 
-/// Parse CSV in parallel with configurable separator(s) and escape
+/// Parse CSV in parallel with configurable separator(s), escape, and newlines
 #[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_parallel_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
     sep_term: Term<'a>,
     esc_term: Term<'a>,
+    newlines_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
+    let newlines = decode_newlines(newlines_term)?;
     let bytes = input.as_slice();
+
+    if !newlines.is_default {
+        let rows = parse_csv_parallel_general_with_newlines(
+            bytes,
+            &separators.patterns,
+            &escape.bytes,
+            &newlines,
+        );
+        return Ok(owned_rows_to_term(env, rows));
+    }
 
     let rows = if is_all_single_byte(&separators, &escape) {
         let esc = escape.bytes[0];
@@ -447,17 +526,34 @@ fn parse_string_zero_copy<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term
     Ok(boundaries_to_term_hybrid(env, input, boundaries, b'"'))
 }
 
-/// Parse CSV using zero-copy with configurable separator(s) and escape
+/// Parse CSV using zero-copy with configurable separator(s), escape, and newlines
 #[rustler::nif]
 fn parse_string_zero_copy_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
     sep_term: Term<'a>,
     esc_term: Term<'a>,
+    newlines_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
+    let newlines = decode_newlines(newlines_term)?;
     let bytes = input.as_slice();
+
+    if !newlines.is_default {
+        let boundaries = parse_csv_boundaries_general_with_newlines(
+            bytes,
+            &separators.patterns,
+            &escape.bytes,
+            &newlines,
+        );
+        return Ok(boundaries_to_term_hybrid_general(
+            env,
+            input,
+            boundaries,
+            &escape.bytes,
+        ));
+    }
 
     if is_all_single_byte(&separators, &escape) {
         let esc = escape.bytes[0];
@@ -524,8 +620,27 @@ fn dispatch_cow_parse<'a>(
     bytes: &'a [u8],
     separators: &Separators,
     escape: &Escape,
+    newlines: &Newlines,
     strategy: &str,
 ) -> Vec<Vec<Cow<'a, [u8]>>> {
+    if !newlines.is_default {
+        return match strategy {
+            "basic" | "simd" => parse_csv_general_with_newlines(
+                bytes,
+                &separators.patterns,
+                &escape.bytes,
+                newlines,
+            ),
+            "indexed" => parse_csv_indexed_general_with_newlines(
+                bytes,
+                &separators.patterns,
+                &escape.bytes,
+                newlines,
+            ),
+            _ => unreachable!(),
+        };
+    }
+
     if is_all_single_byte(separators, escape) {
         let esc = escape.bytes[0];
         let sep_bytes = single_byte_seps(separators);
@@ -569,19 +684,22 @@ fn parse_to_maps<'a>(
     input: Binary<'a>,
     sep_term: Term<'a>,
     esc_term: Term<'a>,
+    newlines_term: Term<'a>,
     strategy: Term<'a>,
     header_mode_term: Term<'a>,
     skip_first: bool,
 ) -> NifResult<Term<'a>> {
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
+    let newlines = decode_newlines(newlines_term)?;
     let header_mode = decode_header_mode(header_mode_term)?;
     let strategy_str = strategy.atom_to_string().map_err(|_| Error::BadArg)?;
     let bytes = input.as_slice();
 
     match strategy_str.as_str() {
         "basic" | "simd" | "indexed" => {
-            let all_rows = dispatch_cow_parse(bytes, &separators, &escape, &strategy_str);
+            let all_rows =
+                dispatch_cow_parse(bytes, &separators, &escape, &newlines, &strategy_str);
             if all_rows.is_empty() {
                 return Ok(Term::list_new_empty(env));
             }
@@ -602,7 +720,67 @@ fn parse_to_maps<'a>(
             }
         }
         "zero_copy" => {
-            if is_all_single_byte(&separators, &escape) {
+            if !newlines.is_default {
+                // Custom newlines: use general boundaries with newlines
+                let all_boundaries = parse_csv_boundaries_general_with_newlines(
+                    bytes,
+                    &separators.patterns,
+                    &escape.bytes,
+                    &newlines,
+                );
+
+                if all_boundaries.is_empty() {
+                    return Ok(Term::list_new_empty(env));
+                }
+
+                match header_mode {
+                    HeaderMode::Auto => {
+                        let input_bytes = input.as_slice();
+                        let esc = &escape.bytes;
+                        let esc_len = esc.len();
+                        let key_terms: Vec<Term<'a>> = all_boundaries[0]
+                            .iter()
+                            .map(|&(start, end)| {
+                                let field = &input_bytes[start..end];
+                                let content = if field.len() >= 2 * esc_len
+                                    && field[..esc_len] == *esc.as_slice()
+                                    && field[field.len() - esc_len..] == *esc.as_slice()
+                                {
+                                    let inner = &field[esc_len..field.len() - esc_len];
+                                    if contains_escape(inner, esc) {
+                                        unescape_field_general(inner, esc)
+                                    } else {
+                                        inner.to_vec()
+                                    }
+                                } else {
+                                    field.to_vec()
+                                };
+                                let mut binary = NewBinary::new(env, content.len());
+                                binary.as_mut_slice().copy_from_slice(&content);
+                                let t: Term = binary.into();
+                                t
+                            })
+                            .collect();
+                        Ok(boundaries_to_maps_hybrid_general(
+                            env,
+                            input,
+                            &key_terms,
+                            &all_boundaries[1..],
+                            &escape.bytes,
+                        ))
+                    }
+                    HeaderMode::Explicit(key_terms) => {
+                        let start = if skip_first { 1 } else { 0 };
+                        Ok(boundaries_to_maps_hybrid_general(
+                            env,
+                            input,
+                            &key_terms,
+                            &all_boundaries[start..],
+                            &escape.bytes,
+                        ))
+                    }
+                }
+            } else if is_all_single_byte(&separators, &escape) {
                 let esc = escape.bytes[0];
                 let sep_bytes = single_byte_seps(&separators);
                 let all_boundaries = if sep_bytes.len() == 1 {
@@ -731,15 +909,24 @@ fn parse_to_maps_parallel<'a>(
     input: Binary<'a>,
     sep_term: Term<'a>,
     esc_term: Term<'a>,
+    newlines_term: Term<'a>,
     header_mode_term: Term<'a>,
     skip_first: bool,
 ) -> NifResult<Term<'a>> {
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
+    let newlines = decode_newlines(newlines_term)?;
     let header_mode = decode_header_mode(header_mode_term)?;
     let bytes = input.as_slice();
 
-    let all_rows = if is_all_single_byte(&separators, &escape) {
+    let all_rows = if !newlines.is_default {
+        parse_csv_parallel_general_with_newlines(
+            bytes,
+            &separators.patterns,
+            &escape.bytes,
+            &newlines,
+        )
+    } else if is_all_single_byte(&separators, &escape) {
         let esc = escape.bytes[0];
         let sep_bytes = single_byte_seps(&separators);
         if sep_bytes.len() == 1 {

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-01-28
+
+### Added
+
+- **Custom newline support** — pass `newlines` option through to the Rust parser so custom line terminators work for parsing, not just dumping
+  - `newlines: ["|"]` — single-byte custom newline
+  - `newlines: ["<br>"]` — multi-byte custom newline
+  - `newlines: ["<br>", "|"]` — multiple custom newlines
+  - Default `["\r\n", "\n"]` routes through existing SIMD-optimized paths — zero performance impact
+  - Custom newlines route through the general byte-by-byte parser
+  - Works with all strategies: `:basic`, `:simd`, `:indexed`, `:parallel`, `:zero_copy`
+  - Works with streaming (`parse_stream/2`)
+  - Works with headers-to-maps (`headers: true`)
+
+### Fixed
+
+- **`escape_formula` uses configured replacement** — no longer hardcodes `\t` prefix; respects the map's replacement value (e.g. `%{["@", "+"] => "'"}` now prepends `'` instead of `\t`)
+- **`escape_chars` uses configured newlines** — custom newlines and `line_separator` now trigger quoting during dump instead of hardcoded `\n`/`\r`
+- **`options/0` normalizes separator to a list** — always returns separator as a list (e.g. `[","]`) to match NimbleCSV behavior
+- **`parse_enumerable` avoids eager concatenation** — delegates to `parse_stream` instead of `Enum.join`, keeping peak memory proportional to result + one chunk
+- **Integer codepoints accepted for `:separator` and `:escape`** — e.g. `separator: ?,, escape: ?"` now works for NimbleCSV compatibility
+
 ## [0.3.0] - 2026-01-28
 
 ### Added

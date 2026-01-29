@@ -9,6 +9,8 @@
 
 use std::borrow::Cow;
 
+use crate::core::newlines::{match_newline, Newlines};
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -651,6 +653,488 @@ impl GeneralStreamingParser {
 }
 
 // ============================================================================
+// Custom Newline Variants
+// ============================================================================
+// These functions are only called when newlines are custom (non-default).
+// They replace hardcoded \n/\r\n checks with match_newline() calls.
+
+/// General parser with custom newlines.
+pub fn parse_csv_general_with_newlines<'a>(
+    input: &'a [u8],
+    separators: &[Vec<u8>],
+    escape: &[u8],
+    newlines: &Newlines,
+) -> Vec<Vec<Cow<'a, [u8]>>> {
+    let mut rows = Vec::new();
+    let mut pos = 0;
+
+    while pos < input.len() {
+        let (row, next_pos) = parse_row_general_with_newlines(input, pos, separators, escape, newlines);
+        rows.push(row);
+        pos = next_pos;
+    }
+
+    rows
+}
+
+fn parse_row_general_with_newlines<'a>(
+    input: &'a [u8],
+    start: usize,
+    separators: &[Vec<u8>],
+    escape: &[u8],
+    newlines: &Newlines,
+) -> (Vec<Cow<'a, [u8]>>, usize) {
+    let mut fields = Vec::new();
+    let mut pos = start;
+    let mut field_start = start;
+    let mut in_quotes = false;
+    let esc_len = escape.len();
+
+    while pos < input.len() {
+        if in_quotes {
+            if starts_with_escape(input, pos, escape) {
+                if starts_with_escape(input, pos + esc_len, escape) {
+                    pos += 2 * esc_len;
+                    continue;
+                }
+                in_quotes = false;
+                pos += esc_len;
+            } else {
+                pos += 1;
+            }
+        } else if starts_with_escape(input, pos, escape) {
+            in_quotes = true;
+            pos += esc_len;
+        } else if let Some(sep_len) = matches_separator(input, pos, separators) {
+            fields.push(extract_field_cow_general(input, field_start, pos, escape));
+            pos += sep_len;
+            field_start = pos;
+        } else {
+            let nl_len = match_newline(input, pos, newlines);
+            if nl_len > 0 {
+                fields.push(extract_field_cow_general(input, field_start, pos, escape));
+                pos += nl_len;
+                return (fields, pos);
+            }
+            pos += 1;
+        }
+    }
+
+    // Handle last field (no trailing newline)
+    if field_start <= input.len() {
+        fields.push(extract_field_cow_general(input, field_start, pos, escape));
+    }
+
+    (fields, pos)
+}
+
+/// Two-phase indexed parser with custom newlines.
+pub fn parse_csv_indexed_general_with_newlines<'a>(
+    input: &'a [u8],
+    separators: &[Vec<u8>],
+    escape: &[u8],
+    newlines: &Newlines,
+) -> Vec<Vec<Cow<'a, [u8]>>> {
+    let index = build_index_general_with_newlines(input, separators, escape, newlines);
+    index
+        .iter()
+        .map(|row_fields| {
+            row_fields
+                .iter()
+                .map(|bound| extract_field_cow_general(input, bound.start, bound.end, escape))
+                .collect()
+        })
+        .collect()
+}
+
+fn build_index_general_with_newlines(
+    input: &[u8],
+    separators: &[Vec<u8>],
+    escape: &[u8],
+    newlines: &Newlines,
+) -> Vec<Vec<GeneralFieldBound>> {
+    let mut all_fields = Vec::new();
+    let mut pos = 0;
+
+    while pos < input.len() {
+        let (fields, next_pos) = index_row_general_with_newlines(input, pos, separators, escape, newlines);
+        if !fields.is_empty() {
+            all_fields.push(fields);
+        }
+        pos = next_pos;
+    }
+
+    all_fields
+}
+
+fn index_row_general_with_newlines(
+    input: &[u8],
+    start: usize,
+    separators: &[Vec<u8>],
+    escape: &[u8],
+    newlines: &Newlines,
+) -> (Vec<GeneralFieldBound>, usize) {
+    let mut fields = Vec::new();
+    let mut pos = start;
+    let mut field_start = start;
+    let mut in_quotes = false;
+    let esc_len = escape.len();
+
+    while pos < input.len() {
+        if in_quotes {
+            if starts_with_escape(input, pos, escape) {
+                if starts_with_escape(input, pos + esc_len, escape) {
+                    pos += 2 * esc_len;
+                    continue;
+                }
+                in_quotes = false;
+                pos += esc_len;
+            } else {
+                pos += 1;
+            }
+        } else if starts_with_escape(input, pos, escape) {
+            in_quotes = true;
+            pos += esc_len;
+        } else if let Some(sep_len) = matches_separator(input, pos, separators) {
+            fields.push(GeneralFieldBound {
+                start: field_start,
+                end: pos,
+            });
+            pos += sep_len;
+            field_start = pos;
+        } else {
+            let nl_len = match_newline(input, pos, newlines);
+            if nl_len > 0 {
+                fields.push(GeneralFieldBound {
+                    start: field_start,
+                    end: pos,
+                });
+                pos += nl_len;
+                return (fields, pos);
+            }
+            pos += 1;
+        }
+    }
+
+    // End of input
+    if field_start < input.len() || !fields.is_empty() {
+        fields.push(GeneralFieldBound {
+            start: field_start,
+            end: input.len(),
+        });
+    }
+
+    (fields, pos)
+}
+
+/// Find row start positions with custom newlines.
+pub fn find_row_starts_general_with_newlines(input: &[u8], escape: &[u8], newlines: &Newlines) -> Vec<usize> {
+    let mut starts = Vec::with_capacity(input.len() / 50 + 1);
+    starts.push(0);
+    let mut pos = 0;
+    let mut in_quotes = false;
+    let esc_len = escape.len();
+
+    while pos < input.len() {
+        if in_quotes {
+            if starts_with_escape(input, pos, escape) {
+                if starts_with_escape(input, pos + esc_len, escape) {
+                    pos += 2 * esc_len;
+                    continue;
+                }
+                in_quotes = false;
+                pos += esc_len;
+            } else {
+                pos += 1;
+            }
+        } else if starts_with_escape(input, pos, escape) {
+            in_quotes = true;
+            pos += esc_len;
+        } else {
+            let nl_len = match_newline(input, pos, newlines);
+            if nl_len > 0 {
+                pos += nl_len;
+                if pos < input.len() {
+                    starts.push(pos);
+                }
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    starts
+}
+
+/// Parallel parser with custom newlines.
+pub fn parse_csv_parallel_general_with_newlines(
+    input: &[u8],
+    separators: &[Vec<u8>],
+    escape: &[u8],
+    newlines: &Newlines,
+) -> Vec<Vec<Vec<u8>>> {
+    use rayon::prelude::*;
+
+    let row_starts = find_row_starts_general_with_newlines(input, escape, newlines);
+
+    if row_starts.is_empty() {
+        return Vec::new();
+    }
+
+    let row_ranges: Vec<(usize, usize)> = row_starts
+        .windows(2)
+        .map(|w| (w[0], w[1]))
+        .chain(std::iter::once((*row_starts.last().unwrap(), input.len())))
+        .collect();
+
+    let separators_vec: Vec<Vec<u8>> = separators.to_vec();
+    let escape_vec: Vec<u8> = escape.to_vec();
+    let newlines_clone = newlines.clone();
+
+    row_ranges
+        .into_par_iter()
+        .filter_map(|(start, end)| {
+            // Strip trailing newline pattern
+            let mut line_end = end;
+            for pattern in newlines_clone.patterns.iter() {
+                if line_end >= start + pattern.len()
+                    && &input[line_end - pattern.len()..line_end] == pattern.as_slice()
+                {
+                    line_end -= pattern.len();
+                    break;
+                }
+            }
+
+            if line_end <= start {
+                return None;
+            }
+
+            let line = &input[start..line_end];
+            let fields = parse_line_fields_owned_general(line, &separators_vec, &escape_vec);
+
+            if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
+                None
+            } else {
+                Some(fields)
+            }
+        })
+        .collect()
+}
+
+/// Zero-copy boundaries with custom newlines.
+pub fn parse_csv_boundaries_general_with_newlines(
+    input: &[u8],
+    separators: &[Vec<u8>],
+    escape: &[u8],
+    newlines: &Newlines,
+) -> Vec<Vec<(usize, usize)>> {
+    let mut rows = Vec::with_capacity(input.len() / 50 + 1);
+    let mut pos = 0;
+
+    while pos < input.len() {
+        let (boundaries, next_pos) =
+            parse_row_boundaries_general_with_newlines(input, pos, separators, escape, newlines);
+        if !boundaries.is_empty() {
+            rows.push(boundaries);
+        }
+        pos = next_pos;
+    }
+
+    rows
+}
+
+fn parse_row_boundaries_general_with_newlines(
+    input: &[u8],
+    start: usize,
+    separators: &[Vec<u8>],
+    escape: &[u8],
+    newlines: &Newlines,
+) -> (Vec<(usize, usize)>, usize) {
+    let mut boundaries = Vec::with_capacity(8);
+    let mut pos = start;
+    let mut field_start = start;
+    let mut in_quotes = false;
+    let esc_len = escape.len();
+
+    while pos < input.len() {
+        if in_quotes {
+            if starts_with_escape(input, pos, escape) {
+                if starts_with_escape(input, pos + esc_len, escape) {
+                    pos += 2 * esc_len;
+                    continue;
+                }
+                in_quotes = false;
+                pos += esc_len;
+            } else {
+                pos += 1;
+            }
+        } else if starts_with_escape(input, pos, escape) {
+            in_quotes = true;
+            pos += esc_len;
+        } else if let Some(sep_len) = matches_separator(input, pos, separators) {
+            boundaries.push((field_start, pos));
+            pos += sep_len;
+            field_start = pos;
+        } else {
+            let nl_len = match_newline(input, pos, newlines);
+            if nl_len > 0 {
+                boundaries.push((field_start, pos));
+                pos += nl_len;
+                return (boundaries, pos);
+            }
+            pos += 1;
+        }
+    }
+
+    // End of input
+    if field_start < input.len() || !boundaries.is_empty() {
+        boundaries.push((field_start, input.len()));
+    }
+
+    (boundaries, input.len())
+}
+
+/// Streaming parser with custom newline support.
+pub struct GeneralStreamingParserNewlines {
+    buffer: Vec<u8>,
+    complete_rows: Vec<Vec<Vec<u8>>>,
+    partial_row_start: usize,
+    scan_pos: usize,
+    in_quotes: bool,
+    separators: Vec<Vec<u8>>,
+    escape: Vec<u8>,
+    newlines: Newlines,
+}
+
+impl GeneralStreamingParserNewlines {
+    pub fn new(separators: Vec<Vec<u8>>, escape: Vec<u8>, newlines: Newlines) -> Self {
+        GeneralStreamingParserNewlines {
+            buffer: Vec::new(),
+            complete_rows: Vec::new(),
+            partial_row_start: 0,
+            scan_pos: 0,
+            in_quotes: false,
+            separators,
+            escape,
+            newlines,
+        }
+    }
+
+    pub fn feed(&mut self, chunk: &[u8]) {
+        self.buffer.extend_from_slice(chunk);
+        self.process_buffer();
+    }
+
+    fn process_buffer(&mut self) {
+        let mut pos = self.scan_pos;
+        let esc_len = self.escape.len();
+        let max_nl_len = self.newlines.max_pattern_len();
+
+        while pos < self.buffer.len() {
+            if self.in_quotes {
+                if starts_with_escape(&self.buffer, pos, &self.escape) {
+                    if starts_with_escape(&self.buffer, pos + esc_len, &self.escape) {
+                        pos += 2 * esc_len;
+                        continue;
+                    }
+                    self.in_quotes = false;
+                    pos += esc_len;
+                } else {
+                    pos += 1;
+                }
+            } else if starts_with_escape(&self.buffer, pos, &self.escape) {
+                self.in_quotes = true;
+                pos += esc_len;
+            } else {
+                // Chunk-boundary safety: if we can't fully check the longest newline
+                // pattern, break and wait for more data.
+                if pos + max_nl_len > self.buffer.len() {
+                    // Check shorter patterns that do fit
+                    let nl_len = match_newline(&self.buffer, pos, &self.newlines);
+                    if nl_len > 0 {
+                        let row_end = pos;
+                        let row = self.parse_row_owned(self.partial_row_start, row_end);
+                        if !row.is_empty() {
+                            self.complete_rows.push(row);
+                        }
+                        pos += nl_len;
+                        self.partial_row_start = pos;
+                        self.in_quotes = false;
+                    } else {
+                        break;
+                    }
+                } else {
+                    let nl_len = match_newline(&self.buffer, pos, &self.newlines);
+                    if nl_len > 0 {
+                        let row_end = pos;
+                        let row = self.parse_row_owned(self.partial_row_start, row_end);
+                        if !row.is_empty() {
+                            self.complete_rows.push(row);
+                        }
+                        pos += nl_len;
+                        self.partial_row_start = pos;
+                        self.in_quotes = false;
+                    } else {
+                        pos += 1;
+                    }
+                }
+            }
+        }
+
+        self.scan_pos = pos;
+
+        if self.partial_row_start > 0 && self.partial_row_start >= self.buffer.len() / 2 {
+            self.compact_buffer();
+        }
+    }
+
+    fn parse_row_owned(&self, start: usize, end: usize) -> Vec<Vec<u8>> {
+        if start >= end {
+            return Vec::new();
+        }
+
+        let line = &self.buffer[start..end];
+        parse_line_fields_owned_general(line, &self.separators, &self.escape)
+    }
+
+    fn compact_buffer(&mut self) {
+        if self.partial_row_start > 0 {
+            self.buffer.drain(0..self.partial_row_start);
+            self.scan_pos -= self.partial_row_start;
+            self.partial_row_start = 0;
+        }
+    }
+
+    pub fn take_rows(&mut self, max: usize) -> Vec<Vec<Vec<u8>>> {
+        let take_count = max.min(self.complete_rows.len());
+        self.complete_rows.drain(0..take_count).collect()
+    }
+
+    pub fn available_rows(&self) -> usize {
+        self.complete_rows.len()
+    }
+
+    pub fn has_partial(&self) -> bool {
+        self.partial_row_start < self.buffer.len()
+    }
+
+    pub fn buffer_size(&self) -> usize {
+        self.buffer.len()
+    }
+
+    pub fn finalize(&mut self) -> Vec<Vec<Vec<u8>>> {
+        if self.partial_row_start < self.buffer.len() {
+            let row = self.parse_row_owned(self.partial_row_start, self.buffer.len());
+            if !row.is_empty() {
+                self.complete_rows.push(row);
+            }
+            self.partial_row_start = self.buffer.len();
+        }
+        std::mem::take(&mut self.complete_rows)
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -803,5 +1287,121 @@ mod tests {
         let rows2 = parser.finalize();
         assert_eq!(rows2.len(), 1);
         assert_eq!(rows2[0], vec![b"1".to_vec(), b"2".to_vec()]);
+    }
+
+    // --- Custom newline tests ---
+
+    #[test]
+    fn test_custom_newline_pipe() {
+        let nl = Newlines::custom(vec![b"|".to_vec()]);
+        let input = b"a,b|1,2|";
+        let seps = vec![b",".to_vec()];
+        let esc = b"\"".to_vec();
+        let result = to_strings(parse_csv_general_with_newlines(input, &seps, &esc, &nl));
+        assert_eq!(result, vec![vec!["a", "b"], vec!["1", "2"]]);
+    }
+
+    #[test]
+    fn test_custom_newline_multi_byte() {
+        let nl = Newlines::custom(vec![b"<br>".to_vec()]);
+        let input = b"a,b<br>1,2<br>";
+        let seps = vec![b",".to_vec()];
+        let esc = b"\"".to_vec();
+        let result = to_strings(parse_csv_general_with_newlines(input, &seps, &esc, &nl));
+        assert_eq!(result, vec![vec!["a", "b"], vec!["1", "2"]]);
+    }
+
+    #[test]
+    fn test_custom_newline_no_trailing() {
+        let nl = Newlines::custom(vec![b"|".to_vec()]);
+        let input = b"a,b|1,2";
+        let seps = vec![b",".to_vec()];
+        let esc = b"\"".to_vec();
+        let result = to_strings(parse_csv_general_with_newlines(input, &seps, &esc, &nl));
+        assert_eq!(result, vec![vec!["a", "b"], vec!["1", "2"]]);
+    }
+
+    #[test]
+    fn test_custom_newline_quoted_field() {
+        let nl = Newlines::custom(vec![b"|".to_vec()]);
+        let input = b"\"a|b\",c|1,2|";
+        let seps = vec![b",".to_vec()];
+        let esc = b"\"".to_vec();
+        let result = to_strings(parse_csv_general_with_newlines(input, &seps, &esc, &nl));
+        assert_eq!(result, vec![vec!["a|b", "c"], vec!["1", "2"]]);
+    }
+
+    #[test]
+    fn test_custom_newline_indexed() {
+        let nl = Newlines::custom(vec![b"|".to_vec()]);
+        let input = b"a,b|1,2|";
+        let seps = vec![b",".to_vec()];
+        let esc = b"\"".to_vec();
+        let result = to_strings(parse_csv_indexed_general_with_newlines(input, &seps, &esc, &nl));
+        assert_eq!(result, vec![vec!["a", "b"], vec!["1", "2"]]);
+    }
+
+    #[test]
+    fn test_custom_newline_parallel() {
+        let nl = Newlines::custom(vec![b"|".to_vec()]);
+        let input = b"a,b|1,2|";
+        let seps = vec![b",".to_vec()];
+        let esc = b"\"".to_vec();
+        let result = to_strings_owned(parse_csv_parallel_general_with_newlines(input, &seps, &esc, &nl));
+        assert_eq!(result, vec![vec!["a", "b"], vec!["1", "2"]]);
+    }
+
+    #[test]
+    fn test_custom_newline_boundaries() {
+        let nl = Newlines::custom(vec![b"|".to_vec()]);
+        let input = b"a,b|1,2|";
+        let seps = vec![b",".to_vec()];
+        let esc = b"\"".to_vec();
+        let boundaries = parse_csv_boundaries_general_with_newlines(input, &seps, &esc, &nl);
+        assert_eq!(boundaries.len(), 2);
+        assert_eq!(boundaries[0], vec![(0, 1), (2, 3)]);
+        assert_eq!(boundaries[1], vec![(4, 5), (6, 7)]);
+    }
+
+    #[test]
+    fn test_custom_newline_streaming() {
+        let nl = Newlines::custom(vec![b"|".to_vec()]);
+        let seps = vec![b",".to_vec()];
+        let esc = b"\"".to_vec();
+        let mut parser = GeneralStreamingParserNewlines::new(seps, esc, nl);
+        parser.feed(b"a,b|1,2|");
+        let rows = parser.take_rows(10);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec()]);
+        assert_eq!(rows[1], vec![b"1".to_vec(), b"2".to_vec()]);
+    }
+
+    #[test]
+    fn test_custom_newline_streaming_chunked() {
+        let nl = Newlines::custom(vec![b"|".to_vec()]);
+        let seps = vec![b",".to_vec()];
+        let esc = b"\"".to_vec();
+        let mut parser = GeneralStreamingParserNewlines::new(seps, esc, nl);
+        parser.feed(b"a,b|1,");
+        assert_eq!(parser.available_rows(), 1);
+        parser.feed(b"2|3,4|");
+        assert_eq!(parser.available_rows(), 3);
+        let rows = parser.take_rows(10);
+        assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec()]);
+        assert_eq!(rows[1], vec![b"1".to_vec(), b"2".to_vec()]);
+        assert_eq!(rows[2], vec![b"3".to_vec(), b"4".to_vec()]);
+    }
+
+    #[test]
+    fn test_custom_newline_streaming_multi_byte() {
+        let nl = Newlines::custom(vec![b"<br>".to_vec()]);
+        let seps = vec![b",".to_vec()];
+        let esc = b"\"".to_vec();
+        let mut parser = GeneralStreamingParserNewlines::new(seps, esc, nl);
+        parser.feed(b"a,b<br>1,2<br>");
+        let rows = parser.take_rows(10);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec()]);
+        assert_eq!(rows[1], vec![b"1".to_vec(), b"2".to_vec()]);
     }
 }

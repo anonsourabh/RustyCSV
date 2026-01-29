@@ -148,8 +148,9 @@ defmodule RustyCSV.Native do
       [["hello", "world"]]
 
   """
-  @spec parse_string_with_config(binary(), separator(), escape()) :: rows()
-  def parse_string_with_config(_csv, _separator, _escape), do: :erlang.nif_error(:nif_not_loaded)
+  @spec parse_string_with_config(binary(), separator(), escape(), term()) :: rows()
+  def parse_string_with_config(_csv, _separator, _escape, _newlines),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
   # Strategy B: SIMD-Accelerated Parsing
@@ -184,8 +185,8 @@ defmodule RustyCSV.Native do
       [["a", "b"], ["1", "2"]]
 
   """
-  @spec parse_string_fast_with_config(binary(), separator(), escape()) :: rows()
-  def parse_string_fast_with_config(_csv, _separator, _escape),
+  @spec parse_string_fast_with_config(binary(), separator(), escape(), term()) :: rows()
+  def parse_string_fast_with_config(_csv, _separator, _escape, _newlines),
     do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
@@ -222,8 +223,8 @@ defmodule RustyCSV.Native do
       [["a", "b"], ["1", "2"]]
 
   """
-  @spec parse_string_indexed_with_config(binary(), separator(), escape()) :: rows()
-  def parse_string_indexed_with_config(_csv, _separator, _escape),
+  @spec parse_string_indexed_with_config(binary(), separator(), escape(), term()) :: rows()
+  def parse_string_indexed_with_config(_csv, _separator, _escape, _newlines),
     do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
@@ -270,8 +271,9 @@ defmodule RustyCSV.Native do
       parser = RustyCSV.Native.streaming_new_with_config("::", 34)
 
   """
-  @spec streaming_new_with_config(separator(), escape()) :: parser_ref()
-  def streaming_new_with_config(_separator, _escape), do: :erlang.nif_error(:nif_not_loaded)
+  @spec streaming_new_with_config(separator(), escape(), term()) :: parser_ref()
+  def streaming_new_with_config(_separator, _escape, _newlines),
+    do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Feed a chunk of CSV data to the streaming parser.
@@ -367,9 +369,9 @@ defmodule RustyCSV.Native do
       [["a", "b"], ["1", "2"]]
 
   """
-  @spec parse_string_parallel_with_config(binary(), separator(), escape()) ::
+  @spec parse_string_parallel_with_config(binary(), separator(), escape(), term()) ::
           rows()
-  def parse_string_parallel_with_config(_csv, _separator, _escape),
+  def parse_string_parallel_with_config(_csv, _separator, _escape, _newlines),
     do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
@@ -409,9 +411,9 @@ defmodule RustyCSV.Native do
       [["a", "b"], ["1", "2"]]
 
   """
-  @spec parse_string_zero_copy_with_config(binary(), separator(), escape()) ::
+  @spec parse_string_zero_copy_with_config(binary(), separator(), escape(), term()) ::
           rows()
-  def parse_string_zero_copy_with_config(_csv, _separator, _escape),
+  def parse_string_zero_copy_with_config(_csv, _separator, _escape, _newlines),
     do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
@@ -431,9 +433,9 @@ defmodule RustyCSV.Native do
     * `skip_first` - Whether to skip the first row when using explicit keys
 
   """
-  @spec parse_to_maps(binary(), separator(), escape(), atom(), atom() | list(), boolean()) ::
+  @spec parse_to_maps(binary(), separator(), escape(), term(), atom(), atom() | list(), boolean()) ::
           [map()]
-  def parse_to_maps(_input, _separator, _escape, _strategy, _header_mode, _skip_first),
+  def parse_to_maps(_input, _separator, _escape, _newlines, _strategy, _header_mode, _skip_first),
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -450,9 +452,16 @@ defmodule RustyCSV.Native do
     * `skip_first` - Whether to skip the first row when using explicit keys
 
   """
-  @spec parse_to_maps_parallel(binary(), separator(), escape(), atom() | list(), boolean()) ::
+  @spec parse_to_maps_parallel(
+          binary(),
+          separator(),
+          escape(),
+          term(),
+          atom() | list(),
+          boolean()
+        ) ::
           [map()]
-  def parse_to_maps_parallel(_input, _separator, _escape, _header_mode, _skip_first),
+  def parse_to_maps_parallel(_input, _separator, _escape, _newlines, _header_mode, _skip_first),
     do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================

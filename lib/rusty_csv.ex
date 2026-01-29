@@ -534,8 +534,8 @@ defmodule RustyCSV do
   # ==========================================================================
 
   defp extract_and_validate_options(options) do
-    separator = Keyword.get(options, :separator, ",")
-    escape = Keyword.get(options, :escape, "\"")
+    separator = Keyword.get(options, :separator, ",") |> normalize_codepoint()
+    escape = Keyword.get(options, :escape, "\"") |> normalize_codepoint()
 
     # Validate and normalize separator(s)
     {separator_list, separator_binaries} = validate_and_normalize_separator!(separator)
@@ -561,10 +561,10 @@ defmodule RustyCSV do
     encoded_newlines = Enum.map(newlines, &:unicode.characters_to_binary(&1, :utf8, encoding))
 
     # For escaping, use all separators plus escape and newlines
-    escape_chars = separator_list ++ [escape, "\n", "\r"] ++ reserved
+    escape_chars = separator_list ++ [escape] ++ newlines ++ [line_separator] ++ reserved
 
     stored_options = [
-      separator: separator,
+      separator: separator_list,
       escape: escape,
       line_separator: line_separator,
       newlines: newlines,
@@ -596,6 +596,9 @@ defmodule RustyCSV do
     }
   end
 
+  defp normalize_codepoint(value) when is_integer(value), do: <<value::utf8>>
+  defp normalize_codepoint(value), do: value
+
   defp validate_non_empty!(name, value) do
     unless is_binary(value) and byte_size(value) >= 1 do
       raise ArgumentError,
@@ -615,6 +618,9 @@ defmodule RustyCSV do
     if Enum.empty?(separators) do
       raise ArgumentError, "RustyCSV separator list cannot be empty"
     end
+
+    # Normalize integer codepoints in lists
+    separators = Enum.map(separators, &normalize_codepoint/1)
 
     Enum.each(separators, fn sep ->
       unless is_binary(sep) and byte_size(sep) >= 1 do
@@ -676,6 +682,15 @@ defmodule RustyCSV do
       @escape_binary unquote(Macro.escape(config.escape_binary))
       @line_separator unquote(Macro.escape(config.line_separator))
       @newlines unquote(Macro.escape(config.newlines))
+      @newlines_nif unquote(
+                      Macro.escape(
+                        if config.newlines == ["\r\n", "\n"] do
+                          :default
+                        else
+                          config.newlines
+                        end
+                      )
+                    )
       @trim_bom unquote(Macro.escape(config.trim_bom))
       @dump_bom unquote(Macro.escape(config.dump_bom))
       @escape_chars unquote(Macro.escape(config.escape_chars))
@@ -791,6 +806,7 @@ defmodule RustyCSV do
           string,
           @separator_binaries,
           @escape_binary,
+          @newlines_nif,
           header_mode,
           skip_first
         )
@@ -801,6 +817,7 @@ defmodule RustyCSV do
           string,
           @separator_binaries,
           @escape_binary,
+          @newlines_nif,
           strategy,
           header_mode,
           skip_first
@@ -856,18 +873,29 @@ defmodule RustyCSV do
   defp quoted_do_parse_string_clauses do
     quote do
       defp do_parse_string(string, :basic) do
-        RustyCSV.Native.parse_string_with_config(string, @separator_binaries, @escape_binary)
+        RustyCSV.Native.parse_string_with_config(
+          string,
+          @separator_binaries,
+          @escape_binary,
+          @newlines_nif
+        )
       end
 
       defp do_parse_string(string, :simd) do
-        RustyCSV.Native.parse_string_fast_with_config(string, @separator_binaries, @escape_binary)
+        RustyCSV.Native.parse_string_fast_with_config(
+          string,
+          @separator_binaries,
+          @escape_binary,
+          @newlines_nif
+        )
       end
 
       defp do_parse_string(string, :indexed) do
         RustyCSV.Native.parse_string_indexed_with_config(
           string,
           @separator_binaries,
-          @escape_binary
+          @escape_binary,
+          @newlines_nif
         )
       end
 
@@ -875,7 +903,8 @@ defmodule RustyCSV do
         RustyCSV.Native.parse_string_parallel_with_config(
           string,
           @separator_binaries,
-          @escape_binary
+          @escape_binary,
+          @newlines_nif
         )
       end
 
@@ -883,7 +912,8 @@ defmodule RustyCSV do
         RustyCSV.Native.parse_string_zero_copy_with_config(
           string,
           @separator_binaries,
-          @escape_binary
+          @escape_binary,
+          @newlines_nif
         )
       end
     end
@@ -930,6 +960,7 @@ defmodule RustyCSV do
             batch_size: batch_size,
             separator: @separator_binaries,
             escape: @escape_binary,
+            newlines: @newlines_nif,
             encoding: @encoding,
             bom: @bom,
             trim_bom: @trim_bom
@@ -1001,8 +1032,9 @@ defmodule RustyCSV do
       def parse_enumerable(enumerable, opts \\ [])
 
       def parse_enumerable(enumerable, opts) when is_list(opts) do
-        string = Enum.join(enumerable, "")
-        parse_string(string, opts)
+        enumerable
+        |> parse_stream(opts)
+        |> Enum.to_list()
       end
     end
   end
@@ -1151,15 +1183,26 @@ defmodule RustyCSV do
   end
 
   defp quoted_escape_formula_function(escape_formula) do
-    quote do
-      defp maybe_escape_formula(<<char, _rest::binary>> = field) do
-        if Map.has_key?(unquote(Macro.escape(escape_formula)), <<char>>) do
-          "\t" <> field
-        else
-          field
-        end
-      end
+    # Flatten the map into {prefix, replacement} pairs.
+    # Keys are lists of prefix strings, values are the replacement string.
+    # e.g. %{["@", "+", "-", "="] => "'"} => [{"@", "'"}, {"+", "'"}, ...]
+    pairs =
+      Enum.flat_map(escape_formula, fn {prefixes, replacement} ->
+        prefixes = if is_list(prefixes), do: prefixes, else: [prefixes]
+        Enum.map(prefixes, fn prefix -> {prefix, replacement} end)
+      end)
 
+    clauses =
+      Enum.map(pairs, fn {prefix, replacement} ->
+        quote do
+          defp maybe_escape_formula(<<unquote(prefix), _rest::binary>> = field) do
+            unquote(replacement) <> field
+          end
+        end
+      end)
+
+    quote do
+      unquote_splicing(clauses)
       defp maybe_escape_formula(field), do: field
     end
   end

@@ -3,7 +3,8 @@
 // This allows the streaming parser state to persist across NIF calls.
 // Supports both single-byte (fast path) and general (multi-byte) parsers.
 
-use crate::strategy::{GeneralStreamingParser, StreamingParser};
+use crate::core::Newlines;
+use crate::strategy::{GeneralStreamingParser, GeneralStreamingParserNewlines, StreamingParser};
 use rustler::ResourceArc;
 use std::sync::Mutex;
 
@@ -11,6 +12,7 @@ use std::sync::Mutex;
 pub enum StreamingParserEnum {
     SingleByte(StreamingParser),
     General(GeneralStreamingParser),
+    GeneralNewlines(GeneralStreamingParserNewlines),
 }
 
 impl StreamingParserEnum {
@@ -18,6 +20,7 @@ impl StreamingParserEnum {
         match self {
             StreamingParserEnum::SingleByte(p) => p.feed(chunk),
             StreamingParserEnum::General(p) => p.feed(chunk),
+            StreamingParserEnum::GeneralNewlines(p) => p.feed(chunk),
         }
     }
 
@@ -25,6 +28,7 @@ impl StreamingParserEnum {
         match self {
             StreamingParserEnum::SingleByte(p) => p.take_rows(max),
             StreamingParserEnum::General(p) => p.take_rows(max),
+            StreamingParserEnum::GeneralNewlines(p) => p.take_rows(max),
         }
     }
 
@@ -32,6 +36,7 @@ impl StreamingParserEnum {
         match self {
             StreamingParserEnum::SingleByte(p) => p.available_rows(),
             StreamingParserEnum::General(p) => p.available_rows(),
+            StreamingParserEnum::GeneralNewlines(p) => p.available_rows(),
         }
     }
 
@@ -39,6 +44,7 @@ impl StreamingParserEnum {
         match self {
             StreamingParserEnum::SingleByte(p) => p.has_partial(),
             StreamingParserEnum::General(p) => p.has_partial(),
+            StreamingParserEnum::GeneralNewlines(p) => p.has_partial(),
         }
     }
 
@@ -46,6 +52,7 @@ impl StreamingParserEnum {
         match self {
             StreamingParserEnum::SingleByte(p) => p.buffer_size(),
             StreamingParserEnum::General(p) => p.buffer_size(),
+            StreamingParserEnum::GeneralNewlines(p) => p.buffer_size(),
         }
     }
 
@@ -53,6 +60,7 @@ impl StreamingParserEnum {
         match self {
             StreamingParserEnum::SingleByte(p) => p.finalize(),
             StreamingParserEnum::General(p) => p.finalize(),
+            StreamingParserEnum::GeneralNewlines(p) => p.finalize(),
         }
     }
 }
@@ -90,6 +98,18 @@ impl StreamingParserResource {
             inner: Mutex::new(StreamingParserEnum::General(GeneralStreamingParser::new(
                 separators, escape,
             ))),
+        }
+    }
+
+    pub fn with_general_newlines(
+        separators: Vec<Vec<u8>>,
+        escape: Vec<u8>,
+        newlines: Newlines,
+    ) -> Self {
+        StreamingParserResource {
+            inner: Mutex::new(StreamingParserEnum::GeneralNewlines(
+                GeneralStreamingParserNewlines::new(separators, escape, newlines),
+            )),
         }
     }
 }

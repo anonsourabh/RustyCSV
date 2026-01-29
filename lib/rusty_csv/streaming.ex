@@ -146,9 +146,10 @@ defmodule RustyCSV.Streaming do
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     separator = Keyword.get(opts, :separator, <<?,>>)
     escape = Keyword.get(opts, :escape, ?")
+    newlines = Keyword.get(opts, :newlines, :default)
 
     Stream.resource(
-      fn -> init_file_stream(path, chunk_size, batch_size, separator, escape) end,
+      fn -> init_file_stream(path, chunk_size, batch_size, separator, escape, newlines) end,
       &next_rows_file/1,
       &cleanup_file_stream/1
     )
@@ -191,6 +192,7 @@ defmodule RustyCSV.Streaming do
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     separator = Keyword.get(opts, :separator, <<?,>>)
     escape = Keyword.get(opts, :escape, ?")
+    newlines = Keyword.get(opts, :newlines, :default)
     encoding = Keyword.get(opts, :encoding, :utf8)
     bom = Keyword.get(opts, :bom, "")
     trim_bom = Keyword.get(opts, :trim_bom, false)
@@ -214,7 +216,7 @@ defmodule RustyCSV.Streaming do
         |> convert_stream_to_utf8(encoding)
       end
 
-    parser = RustyCSV.Native.streaming_new_with_config(separator, escape)
+    parser = RustyCSV.Native.streaming_new_with_config(separator, escape, newlines)
 
     Stream.transform(
       converted_enumerable,
@@ -322,9 +324,10 @@ defmodule RustyCSV.Streaming do
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     separator = Keyword.get(opts, :separator, <<?,>>)
     escape = Keyword.get(opts, :escape, ?")
+    newlines = Keyword.get(opts, :newlines, :default)
 
     Stream.resource(
-      fn -> init_device_stream(device, chunk_size, batch_size, separator, escape) end,
+      fn -> init_device_stream(device, chunk_size, batch_size, separator, escape, newlines) end,
       &next_rows_device/1,
       fn _state -> :ok end
     )
@@ -359,7 +362,8 @@ defmodule RustyCSV.Streaming do
   def parse_chunks(chunks, opts \\ []) when is_list(chunks) do
     separator = Keyword.get(opts, :separator, <<?,>>)
     escape = Keyword.get(opts, :escape, ?")
-    parser = RustyCSV.Native.streaming_new_with_config(separator, escape)
+    newlines = Keyword.get(opts, :newlines, :default)
+    parser = RustyCSV.Native.streaming_new_with_config(separator, escape, newlines)
 
     # Feed all chunks
     Enum.each(chunks, fn chunk ->
@@ -380,9 +384,9 @@ defmodule RustyCSV.Streaming do
   # File Streaming (Private)
   # ==========================================================================
 
-  defp init_file_stream(path, chunk_size, batch_size, separator, escape) do
+  defp init_file_stream(path, chunk_size, batch_size, separator, escape, newlines) do
     device = File.open!(path, [:read, :binary, :raw])
-    parser = RustyCSV.Native.streaming_new_with_config(separator, escape)
+    parser = RustyCSV.Native.streaming_new_with_config(separator, escape, newlines)
     {:file, device, parser, chunk_size, batch_size}
   end
 
@@ -431,8 +435,8 @@ defmodule RustyCSV.Streaming do
   # Device Streaming (Private)
   # ==========================================================================
 
-  defp init_device_stream(device, chunk_size, batch_size, separator, escape) do
-    parser = RustyCSV.Native.streaming_new_with_config(separator, escape)
+  defp init_device_stream(device, chunk_size, batch_size, separator, escape, newlines) do
+    parser = RustyCSV.Native.streaming_new_with_config(separator, escape, newlines)
     {:device, device, parser, chunk_size, batch_size}
   end
 
