@@ -669,7 +669,8 @@ pub fn parse_csv_general_with_newlines<'a>(
     let mut pos = 0;
 
     while pos < input.len() {
-        let (row, next_pos) = parse_row_general_with_newlines(input, pos, separators, escape, newlines);
+        let (row, next_pos) =
+            parse_row_general_with_newlines(input, pos, separators, escape, newlines);
         rows.push(row);
         pos = next_pos;
     }
@@ -757,7 +758,8 @@ fn build_index_general_with_newlines(
     let mut pos = 0;
 
     while pos < input.len() {
-        let (fields, next_pos) = index_row_general_with_newlines(input, pos, separators, escape, newlines);
+        let (fields, next_pos) =
+            index_row_general_with_newlines(input, pos, separators, escape, newlines);
         if !fields.is_empty() {
             all_fields.push(fields);
         }
@@ -828,7 +830,11 @@ fn index_row_general_with_newlines(
 }
 
 /// Find row start positions with custom newlines.
-pub fn find_row_starts_general_with_newlines(input: &[u8], escape: &[u8], newlines: &Newlines) -> Vec<usize> {
+pub fn find_row_starts_general_with_newlines(
+    input: &[u8],
+    escape: &[u8],
+    newlines: &Newlines,
+) -> Vec<usize> {
     let mut starts = Vec::with_capacity(input.len() / 50 + 1);
     starts.push(0);
     let mut pos = 0;
@@ -1337,7 +1343,9 @@ mod tests {
         let input = b"a,b|1,2|";
         let seps = vec![b",".to_vec()];
         let esc = b"\"".to_vec();
-        let result = to_strings(parse_csv_indexed_general_with_newlines(input, &seps, &esc, &nl));
+        let result = to_strings(parse_csv_indexed_general_with_newlines(
+            input, &seps, &esc, &nl,
+        ));
         assert_eq!(result, vec![vec!["a", "b"], vec!["1", "2"]]);
     }
 
@@ -1347,7 +1355,9 @@ mod tests {
         let input = b"a,b|1,2|";
         let seps = vec![b",".to_vec()];
         let esc = b"\"".to_vec();
-        let result = to_strings_owned(parse_csv_parallel_general_with_newlines(input, &seps, &esc, &nl));
+        let result = to_strings_owned(parse_csv_parallel_general_with_newlines(
+            input, &seps, &esc, &nl,
+        ));
         assert_eq!(result, vec![vec!["a", "b"], vec!["1", "2"]]);
     }
 
