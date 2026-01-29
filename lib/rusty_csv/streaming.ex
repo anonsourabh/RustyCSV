@@ -83,6 +83,7 @@ defmodule RustyCSV.Streaming do
           batch_size: pos_integer(),
           separator: binary() | non_neg_integer() | [binary()],
           escape: binary() | non_neg_integer(),
+          newlines: :default | [binary()],
           encoding: RustyCSV.encoding(),
           bom: binary(),
           trim_bom: boolean()
