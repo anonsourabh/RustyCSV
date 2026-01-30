@@ -5,9 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.2] - 2026-01-29
+## [0.3.3] - 2026-01-29
 
 Internal safety hardening and scheduler improvements. No new user-facing features — all changes are on by default with zero configuration required.
+
+### Changed
+
+- **NIF panic safety** — all Rust NIF code paths now use explicit error handling instead of panics, eliminating the possibility of panic-induced lock poisoning or inconsistent state under any input
+
+## [0.3.2] - 2026-01-29
 
 > **⚠️ Note:** Streaming parsers now enforce a 256 MB buffer cap. If your workload
 > streams chunks larger than 256 MB without any newline characters, `streaming_feed/2`

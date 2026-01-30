@@ -68,6 +68,20 @@ defmodule RustyCSV.Streaming do
 
       CSV.parse_stream(stream, max_buffer_size: 512 * 1024 * 1024)
 
+  ## Concurrency
+
+  Streaming parser references are safe to share across BEAM processes — the
+  underlying Rust state is protected by a mutex. Concurrent access is serialized,
+  so for maximum throughput use one parser per process.
+
+  If a NIF panics while holding the mutex, the lock is poisoned and subsequent
+  calls raise `:mutex_poisoned`. The parser should be discarded in this case.
+
+  ## Scheduling
+
+  `streaming_feed/2`, `streaming_next_rows/2`, and `streaming_finalize/1` run
+  on dirty CPU schedulers to avoid blocking normal BEAM schedulers.
+
   ## Implementation Notes
 
   The streaming parser:

@@ -1,5 +1,8 @@
 // RustyCSV - Fast CSV parsing with multiple strategies
 //
+// NIF safety: no unwrap/expect in production code. Fallible paths use match + early return.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+//
 // Strategies:
 // A: Basic byte-by-byte parsing (parse_string)
 // B: SIMD-accelerated via memchr (parse_string_fast)

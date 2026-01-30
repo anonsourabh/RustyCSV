@@ -44,6 +44,13 @@ defmodule RustyCSV do
 
       CSV.parse_string(large_csv, strategy: :parallel)
 
+  ## Scheduling
+
+  All parsing NIFs run on BEAM dirty CPU schedulers, so they never block
+  normal schedulers. Parallel parsing (`:parallel` strategy) additionally
+  runs on a dedicated `rustycsv-*` rayon thread pool to avoid contention
+  with other Rayon users in the same VM.
+
   ## Streaming
 
   For large files, use `parse_stream/2` which uses a bounded-memory streaming parser:
@@ -53,6 +60,10 @@ defmodule RustyCSV do
       |> CSV.parse_stream()
       |> Stream.each(&process_row/1)
       |> Stream.run()
+
+  Streaming parsers are safe to share across processes — the underlying
+  Rust resource is protected by a mutex. However, concurrent access is
+  serialized, so for maximum throughput use one parser per process.
 
   ## Dumping
 

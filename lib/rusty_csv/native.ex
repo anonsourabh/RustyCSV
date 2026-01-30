@@ -38,11 +38,27 @@ defmodule RustyCSV.Native do
   | Strategy | Use Case | Memory Model |
   |----------|----------|--------------|
   | `parse_string_fast/1` | Default, most files | Copy (frees input) |
-  | `parse_string_parallel/1` | Large files 100MB+ | Copy (frees input) |
+  | `parse_string_parallel/1` | Large files 500MB+ | Copy (frees input) |
   | `parse_string_zero_copy/1` | Maximum speed | Sub-binary (keeps input) |
   | `parse_string_indexed/1` | Row range extraction | Copy (frees input) |
   | `streaming_*` | Unbounded files | Copy (per chunk) |
   | `parse_string/1` | Debugging | Copy (frees input) |
+
+  ## Scheduling
+
+  All parsing NIFs run on BEAM dirty CPU schedulers to avoid blocking
+  normal schedulers. This includes all `parse_string*` functions,
+  `streaming_feed/2`, `streaming_next_rows/2`, and `streaming_finalize/1`.
+
+  Parallel parsing runs on a dedicated named `rustycsv-*` rayon thread pool
+  (capped at 8 threads) rather than the global rayon pool.
+
+  ## Concurrency
+
+  Streaming parser references (`t:parser_ref/0`) are safe to share across
+  BEAM processes — the underlying Rust state is protected by a mutex. If a
+  NIF panics while holding the lock, subsequent calls return `:mutex_poisoned`
+  instead of crashing the VM.
 
   ## Memory Tracking (Optional)
 
@@ -102,7 +118,7 @@ defmodule RustyCSV.Native do
   # ==========================================================================
 
   @doc """
-  Parse CSV using basic byte-by-byte scanning.
+  Parse CSV using basic byte-by-byte scanning. Runs on a dirty CPU scheduler.
 
   This is the simplest implementation, processing one byte at a time.
   Use `parse_string_fast/1` for better performance in most cases.
@@ -157,7 +173,7 @@ defmodule RustyCSV.Native do
   # ==========================================================================
 
   @doc """
-  Parse CSV using SIMD-accelerated delimiter scanning.
+  Parse CSV using SIMD-accelerated delimiter scanning. Runs on a dirty CPU scheduler.
 
   Uses the `memchr` crate for fast delimiter detection on supported
   architectures. This is the recommended strategy for most use cases.
@@ -194,7 +210,7 @@ defmodule RustyCSV.Native do
   # ==========================================================================
 
   @doc """
-  Parse CSV using two-phase index-then-extract approach.
+  Parse CSV using two-phase index-then-extract approach. Runs on a dirty CPU scheduler.
 
   First builds an index of row/field boundaries, then extracts fields.
   This approach has better cache utilization and enables advanced use
@@ -237,6 +253,9 @@ defmodule RustyCSV.Native do
   The streaming parser maintains internal state and can process CSV data
   in chunks, making it suitable for large files with bounded memory usage.
 
+  The returned reference is safe to share across BEAM processes — the
+  underlying Rust state is protected by a mutex.
+
   ## Examples
 
       parser = RustyCSV.Native.streaming_new()
@@ -276,7 +295,7 @@ defmodule RustyCSV.Native do
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Feed a chunk of CSV data to the streaming parser.
+  Feed a chunk of CSV data to the streaming parser. Runs on a dirty CPU scheduler.
 
   Returns `{available_rows, buffer_size}` indicating the number of complete
   rows ready to be taken and the current buffer size.
@@ -298,7 +317,7 @@ defmodule RustyCSV.Native do
   def streaming_feed(_parser, _chunk), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Take up to `max` complete rows from the streaming parser.
+  Take up to `max` complete rows from the streaming parser. Runs on a dirty CPU scheduler.
 
   Returns the rows as a list of lists of binaries.
 
@@ -311,7 +330,7 @@ defmodule RustyCSV.Native do
   def streaming_next_rows(_parser, _max), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Finalize the streaming parser and get any remaining rows.
+  Finalize the streaming parser and get any remaining rows. Runs on a dirty CPU scheduler.
 
   This should be called after all data has been fed to get any partial
   row that was waiting for a terminating newline.
@@ -394,7 +413,7 @@ defmodule RustyCSV.Native do
   # ==========================================================================
 
   @doc """
-  Parse CSV using zero-copy sub-binary references where possible.
+  Parse CSV using zero-copy sub-binary references where possible. Runs on a dirty CPU scheduler.
 
   Uses BEAM sub-binary references for unquoted and simply-quoted fields,
   only copying when quote unescaping is needed (hybrid Cow approach).

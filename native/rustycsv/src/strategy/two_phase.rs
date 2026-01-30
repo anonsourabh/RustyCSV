@@ -123,13 +123,8 @@ pub fn build_index_with_config(input: &[u8], separator: u8, escape: u8) -> CsvIn
         let row_start = pos;
         let (fields, next_pos) = parse_row_index_with_config(input, pos, separator, escape);
 
-        if !fields.is_empty() {
-            // Calculate row end (before newline)
-            let row_end = if !fields.is_empty() {
-                fields.last().unwrap().end
-            } else {
-                pos
-            };
+        if let Some(last_field) = fields.last() {
+            let row_end = last_field.end;
             row_bounds.push((row_start, row_end));
             field_bounds.push(fields);
         }
@@ -297,12 +292,8 @@ pub fn build_index_multi_sep(input: &[u8], separators: &[u8], escape: u8) -> Csv
         let row_start = pos;
         let (fields, next_pos) = parse_row_index_multi_sep(input, pos, separators, escape);
 
-        if !fields.is_empty() {
-            let row_end = if !fields.is_empty() {
-                fields.last().unwrap().end
-            } else {
-                pos
-            };
+        if let Some(last_field) = fields.last() {
+            let row_end = last_field.end;
             row_bounds.push((row_start, row_end));
             field_bounds.push(fields);
         }

@@ -398,10 +398,14 @@ pub fn parse_csv_parallel_general(
         return Vec::new();
     }
 
+    let &last_start = match row_starts.last() {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
     let row_ranges: Vec<(usize, usize)> = row_starts
         .windows(2)
         .map(|w| (w[0], w[1]))
-        .chain(std::iter::once((*row_starts.last().unwrap(), input.len())))
+        .chain(std::iter::once((last_start, input.len())))
         .collect();
 
     let separators_vec: Vec<Vec<u8>> = separators.to_vec();
@@ -902,10 +906,14 @@ pub fn parse_csv_parallel_general_with_newlines(
         return Vec::new();
     }
 
+    let &last_start = match row_starts.last() {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
     let row_ranges: Vec<(usize, usize)> = row_starts
         .windows(2)
         .map(|w| (w[0], w[1]))
-        .chain(std::iter::once((*row_starts.last().unwrap(), input.len())))
+        .chain(std::iter::once((last_start, input.len())))
         .collect();
 
     let separators_vec: Vec<Vec<u8>> = separators.to_vec();

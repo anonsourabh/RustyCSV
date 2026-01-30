@@ -1,7 +1,7 @@
 defmodule RustyCSV.MixProject do
   use Mix.Project
 
-  @version "0.3.2"
+  @version "0.3.3"
   @source_url "https://github.com/jeffhuen/rustycsv"
 
   def project do
@@ -99,6 +99,7 @@ defmodule RustyCSV.MixProject do
       {:rustler, "~> 0.37", optional: true},
       {:rustler_precompiled, "~> 0.8"},
       {:nimble_csv, "~> 1.2", only: [:dev, :test]},
+      {:stream_data, "~> 1.0", only: [:dev, :test]},
       {:benchee, "~> 1.0", only: :dev},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
