@@ -24,7 +24,7 @@ impl Newlines {
     /// Custom newline patterns. Sorts longest-first for greedy matching.
     pub fn custom(mut patterns: Vec<Vec<u8>>) -> Self {
         // Sort longest-first so greedy matching works correctly
-        patterns.sort_by(|a, b| b.len().cmp(&a.len()));
+        patterns.sort_by_key(|b| std::cmp::Reverse(b.len()));
         Newlines {
             patterns,
             is_default: false,

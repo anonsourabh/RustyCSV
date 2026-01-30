@@ -389,6 +389,7 @@ pub fn parse_csv_parallel_general(
     separators: &[Vec<u8>],
     escape: &[u8],
 ) -> Vec<Vec<Vec<u8>>> {
+    use super::parallel::run_parallel;
     use rayon::prelude::*;
 
     let row_starts = find_row_starts_general(input, escape);
@@ -406,32 +407,34 @@ pub fn parse_csv_parallel_general(
     let separators_vec: Vec<Vec<u8>> = separators.to_vec();
     let escape_vec: Vec<u8> = escape.to_vec();
 
-    row_ranges
-        .into_par_iter()
-        .filter_map(|(start, end)| {
-            // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
-            let mut line_end = end;
-            if line_end > start && input[line_end - 1] == b'\n' {
-                line_end -= 1;
-                if line_end > start && input[line_end - 1] == b'\r' {
+    run_parallel(|| {
+        row_ranges
+            .into_par_iter()
+            .filter_map(|(start, end)| {
+                // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
+                let mut line_end = end;
+                if line_end > start && input[line_end - 1] == b'\n' {
                     line_end -= 1;
+                    if line_end > start && input[line_end - 1] == b'\r' {
+                        line_end -= 1;
+                    }
                 }
-            }
 
-            if line_end <= start {
-                return None;
-            }
+                if line_end <= start {
+                    return None;
+                }
 
-            let line = &input[start..line_end];
-            let fields = parse_line_fields_owned_general(line, &separators_vec, &escape_vec);
+                let line = &input[start..line_end];
+                let fields = parse_line_fields_owned_general(line, &separators_vec, &escape_vec);
 
-            if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
-                None
-            } else {
-                Some(fields)
-            }
-        })
-        .collect()
+                if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
+                    None
+                } else {
+                    Some(fields)
+                }
+            })
+            .collect()
+    })
 }
 
 // ============================================================================
@@ -527,10 +530,12 @@ pub struct GeneralStreamingParser {
     in_quotes: bool,
     separators: Vec<Vec<u8>>,
     escape: Vec<u8>,
+    max_buffer_size: usize,
 }
 
 impl GeneralStreamingParser {
     pub fn new(separators: Vec<Vec<u8>>, escape: Vec<u8>) -> Self {
+        use super::streaming::DEFAULT_MAX_BUFFER;
         GeneralStreamingParser {
             buffer: Vec::new(),
             complete_rows: Vec::new(),
@@ -539,12 +544,21 @@ impl GeneralStreamingParser {
             in_quotes: false,
             separators,
             escape,
+            max_buffer_size: DEFAULT_MAX_BUFFER,
         }
     }
 
-    pub fn feed(&mut self, chunk: &[u8]) {
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), ()> {
+        if self.buffer.len() + chunk.len() > self.max_buffer_size {
+            return Err(());
+        }
         self.buffer.extend_from_slice(chunk);
         self.process_buffer();
+        Ok(())
+    }
+
+    pub fn set_max_buffer_size(&mut self, max: usize) {
+        self.max_buffer_size = max;
     }
 
     fn process_buffer(&mut self) {
@@ -879,6 +893,7 @@ pub fn parse_csv_parallel_general_with_newlines(
     escape: &[u8],
     newlines: &Newlines,
 ) -> Vec<Vec<Vec<u8>>> {
+    use super::parallel::run_parallel;
     use rayon::prelude::*;
 
     let row_starts = find_row_starts_general_with_newlines(input, escape, newlines);
@@ -897,34 +912,36 @@ pub fn parse_csv_parallel_general_with_newlines(
     let escape_vec: Vec<u8> = escape.to_vec();
     let newlines_clone = newlines.clone();
 
-    row_ranges
-        .into_par_iter()
-        .filter_map(|(start, end)| {
-            // Strip trailing newline pattern
-            let mut line_end = end;
-            for pattern in newlines_clone.patterns.iter() {
-                if line_end >= start + pattern.len()
-                    && &input[line_end - pattern.len()..line_end] == pattern.as_slice()
-                {
-                    line_end -= pattern.len();
-                    break;
+    run_parallel(|| {
+        row_ranges
+            .into_par_iter()
+            .filter_map(|(start, end)| {
+                // Strip trailing newline pattern
+                let mut line_end = end;
+                for pattern in newlines_clone.patterns.iter() {
+                    if line_end >= start + pattern.len()
+                        && &input[line_end - pattern.len()..line_end] == pattern.as_slice()
+                    {
+                        line_end -= pattern.len();
+                        break;
+                    }
                 }
-            }
 
-            if line_end <= start {
-                return None;
-            }
+                if line_end <= start {
+                    return None;
+                }
 
-            let line = &input[start..line_end];
-            let fields = parse_line_fields_owned_general(line, &separators_vec, &escape_vec);
+                let line = &input[start..line_end];
+                let fields = parse_line_fields_owned_general(line, &separators_vec, &escape_vec);
 
-            if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
-                None
-            } else {
-                Some(fields)
-            }
-        })
-        .collect()
+                if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
+                    None
+                } else {
+                    Some(fields)
+                }
+            })
+            .collect()
+    })
 }
 
 /// Zero-copy boundaries with custom newlines.
@@ -1010,10 +1027,12 @@ pub struct GeneralStreamingParserNewlines {
     separators: Vec<Vec<u8>>,
     escape: Vec<u8>,
     newlines: Newlines,
+    max_buffer_size: usize,
 }
 
 impl GeneralStreamingParserNewlines {
     pub fn new(separators: Vec<Vec<u8>>, escape: Vec<u8>, newlines: Newlines) -> Self {
+        use super::streaming::DEFAULT_MAX_BUFFER;
         GeneralStreamingParserNewlines {
             buffer: Vec::new(),
             complete_rows: Vec::new(),
@@ -1023,12 +1042,21 @@ impl GeneralStreamingParserNewlines {
             separators,
             escape,
             newlines,
+            max_buffer_size: DEFAULT_MAX_BUFFER,
         }
     }
 
-    pub fn feed(&mut self, chunk: &[u8]) {
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), ()> {
+        if self.buffer.len() + chunk.len() > self.max_buffer_size {
+            return Err(());
+        }
         self.buffer.extend_from_slice(chunk);
         self.process_buffer();
+        Ok(())
+    }
+
+    pub fn set_max_buffer_size(&mut self, max: usize) {
+        self.max_buffer_size = max;
     }
 
     fn process_buffer(&mut self) {
@@ -1260,7 +1288,7 @@ mod tests {
         let seps = vec![b"::".to_vec()];
         let esc = b"\"".to_vec();
         let mut parser = GeneralStreamingParser::new(seps, esc);
-        parser.feed(b"a::b::c\n1::2::3\n");
+        parser.feed(b"a::b::c\n1::2::3\n").unwrap();
 
         let rows = parser.take_rows(10);
         assert_eq!(rows.len(), 2);
@@ -1272,9 +1300,9 @@ mod tests {
         let seps = vec![b"::".to_vec()];
         let esc = b"\"".to_vec();
         let mut parser = GeneralStreamingParser::new(seps, esc);
-        parser.feed(b"a::b::");
+        parser.feed(b"a::b::").unwrap();
         assert_eq!(parser.available_rows(), 0);
-        parser.feed(b"c\n1::2::3\n");
+        parser.feed(b"c\n1::2::3\n").unwrap();
         assert_eq!(parser.available_rows(), 2);
 
         let rows = parser.take_rows(10);
@@ -1286,7 +1314,7 @@ mod tests {
         let seps = vec![b"::".to_vec()];
         let esc = b"\"".to_vec();
         let mut parser = GeneralStreamingParser::new(seps, esc);
-        parser.feed(b"a::b\n1::2");
+        parser.feed(b"a::b\n1::2").unwrap();
         let rows1 = parser.take_rows(10);
         assert_eq!(rows1.len(), 1);
 
@@ -1379,7 +1407,7 @@ mod tests {
         let seps = vec![b",".to_vec()];
         let esc = b"\"".to_vec();
         let mut parser = GeneralStreamingParserNewlines::new(seps, esc, nl);
-        parser.feed(b"a,b|1,2|");
+        parser.feed(b"a,b|1,2|").unwrap();
         let rows = parser.take_rows(10);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec()]);
@@ -1392,9 +1420,9 @@ mod tests {
         let seps = vec![b",".to_vec()];
         let esc = b"\"".to_vec();
         let mut parser = GeneralStreamingParserNewlines::new(seps, esc, nl);
-        parser.feed(b"a,b|1,");
+        parser.feed(b"a,b|1,").unwrap();
         assert_eq!(parser.available_rows(), 1);
-        parser.feed(b"2|3,4|");
+        parser.feed(b"2|3,4|").unwrap();
         assert_eq!(parser.available_rows(), 3);
         let rows = parser.take_rows(10);
         assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec()]);
@@ -1408,7 +1436,7 @@ mod tests {
         let seps = vec![b",".to_vec()];
         let esc = b"\"".to_vec();
         let mut parser = GeneralStreamingParserNewlines::new(seps, esc, nl);
-        parser.feed(b"a,b<br>1,2<br>");
+        parser.feed(b"a,b<br>1,2<br>").unwrap();
         let rows = parser.take_rows(10);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec()]);

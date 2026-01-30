@@ -3,7 +3,7 @@
 **Ultra-fast CSV parsing for Elixir.** A purpose-built Rust NIF with six parsing strategies, SIMD acceleration, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
 
 [![Hex.pm](https://img.shields.io/hexpm/v/rusty_csv.svg)](https://hex.pm/packages/rusty_csv)
-[![Tests](https://img.shields.io/badge/tests-330%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-348%20passed-brightgreen.svg)]()
 [![RFC 4180](https://img.shields.io/badge/RFC%204180-compliant-blue.svg)]()
 
 ## Why RustyCSV?
@@ -40,7 +40,7 @@
 | **High-performance allocator** | ✅ mimalloc | System |
 | **Drop-in replacement** | ✅ Same API | - |
 | **Headers-to-maps** | ✅ `headers: true` or explicit keys | ❌ |
-| **RFC 4180 compliant** | ✅ 330 tests | ✅ |
+| **RFC 4180 compliant** | ✅ 348 tests | ✅ |
 | **Benchmark (7MB CSV)** | ~24ms | ~219ms |
 
 ## Purpose-Built for Elixir
@@ -85,7 +85,7 @@ File.stream!("huge.csv") |> CSV.parse_stream()   # Bounded memory
 
 ```elixir
 def deps do
-  [{:rusty_csv, "~> 0.3.1"}]
+  [{:rusty_csv, "~> 0.3.2"}]
 end
 ```
 
@@ -324,7 +324,7 @@ RustyCSV is **fully RFC 4180 compliant** and validated against industry-standard
 | Multi-byte escape | 14 | ✅ All pass |
 | Native API separator/escape | 40 | ✅ All pass |
 | Headers-to-maps | 97 | ✅ All pass |
-| **Total** | **330** | ✅ |
+| **Total** | **348** | ✅ |
 
 See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for full compliance details.
 
@@ -410,6 +410,25 @@ File.stream!("huge.csv", [], 65_536)
 |> Stream.run()
 ```
 
+### Streaming Buffer Limit
+
+The streaming parser enforces a maximum internal buffer size (default **256 MB**)
+to prevent unbounded memory growth when parsing data without newlines or with
+very long rows. If a feed exceeds this limit, a `:buffer_overflow` exception is raised.
+
+To adjust the limit, pass `:max_buffer_size` (in bytes):
+
+```elixir
+# Increase for files with very long rows
+CSV.parse_stream(stream, max_buffer_size: 512 * 1024 * 1024)
+
+# Decrease to fail fast on malformed input
+CSV.parse_stream(stream, max_buffer_size: 10 * 1024 * 1024)
+
+# Also works on direct streaming APIs
+RustyCSV.Streaming.stream_file("data.csv", max_buffer_size: 1_073_741_824)
+```
+
 ### High-Performance Allocator
 
 RustyCSV uses [mimalloc](https://github.com/microsoft/mimalloc) as the default allocator, providing:
@@ -460,7 +479,7 @@ mix deps.get
 # Compile (includes Rust NIF)
 mix compile
 
-# Run tests (330 tests)
+# Run tests (348 tests)
 mix test
 
 # Run benchmarks

@@ -16,11 +16,19 @@ pub enum StreamingParserEnum {
 }
 
 impl StreamingParserEnum {
-    pub fn feed(&mut self, chunk: &[u8]) {
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), ()> {
         match self {
             StreamingParserEnum::SingleByte(p) => p.feed(chunk),
             StreamingParserEnum::General(p) => p.feed(chunk),
             StreamingParserEnum::GeneralNewlines(p) => p.feed(chunk),
+        }
+    }
+
+    pub fn set_max_buffer_size(&mut self, max: usize) {
+        match self {
+            StreamingParserEnum::SingleByte(p) => p.set_max_buffer_size(max),
+            StreamingParserEnum::General(p) => p.set_max_buffer_size(max),
+            StreamingParserEnum::GeneralNewlines(p) => p.set_max_buffer_size(max),
         }
     }
 

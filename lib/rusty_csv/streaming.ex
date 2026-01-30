@@ -52,6 +52,22 @@ defmodule RustyCSV.Streaming do
   is automatically converted to UTF-8 before parsing, with proper handling
   of multi-byte character boundaries across chunks.
 
+  ## Buffer Limit
+
+  The streaming parser enforces a maximum buffer size (default 256 MB) to
+  prevent unbounded memory growth when parsing data without newlines or with
+  very long rows. If a `streaming_feed/2` call would push the buffer past
+  this limit, it raises a `:buffer_overflow` exception.
+
+  To adjust the limit, pass the `:max_buffer_size` option (in bytes) to any
+  streaming function:
+
+      RustyCSV.Streaming.stream_file("huge.csv", max_buffer_size: 512 * 1024 * 1024)
+
+  Or from a defined parser:
+
+      CSV.parse_stream(stream, max_buffer_size: 512 * 1024 * 1024)
+
   ## Implementation Notes
 
   The streaming parser:
@@ -60,6 +76,7 @@ defmodule RustyCSV.Streaming do
     * Preserves quote state across chunk boundaries
     * Handles multi-byte character boundaries for non-UTF8 encodings
     * Compacts internal buffer to prevent unbounded growth
+    * Enforces a configurable maximum buffer size (default 256 MB)
     * Returns owned data (copies bytes) since input chunks are temporary
 
   """
@@ -77,6 +94,12 @@ defmodule RustyCSV.Streaming do
   The `:separator` option accepts a binary (e.g., `<<?,>>` or `","`) or an
   integer byte (e.g., `?,` or `9`). When called from a module defined via
   `RustyCSV.define/2`, the separator is already normalized to a binary.
+
+  The `:max_buffer_size` option sets the maximum internal buffer size in bytes.
+  Defaults to `268_435_456` (256 MB). If a `streaming_feed/2` call would push
+  the buffer past this limit, a `:buffer_overflow` exception is raised. Increase
+  this if your data contains rows longer than 256 MB, or decrease it to fail
+  faster on malformed input.
   """
   @type stream_options :: [
           chunk_size: pos_integer(),
@@ -86,7 +109,8 @@ defmodule RustyCSV.Streaming do
           newlines: :default | [binary()],
           encoding: RustyCSV.encoding(),
           bom: binary(),
-          trim_bom: boolean()
+          trim_bom: boolean(),
+          max_buffer_size: pos_integer()
         ]
 
   # ==========================================================================
@@ -115,6 +139,9 @@ defmodule RustyCSV.Streaming do
 
     * `:batch_size` - Maximum rows to yield per stream iteration. Defaults to `1000`.
       Larger batches are more efficient but delay processing of early rows.
+
+    * `:max_buffer_size` - Maximum internal buffer in bytes. Defaults to
+      `268_435_456` (256 MB). Raises `:buffer_overflow` if exceeded.
 
   ## Returns
 
@@ -150,7 +177,7 @@ defmodule RustyCSV.Streaming do
     newlines = Keyword.get(opts, :newlines, :default)
 
     Stream.resource(
-      fn -> init_file_stream(path, chunk_size, batch_size, separator, escape, newlines) end,
+      fn -> init_file_stream(path, chunk_size, batch_size, separator, escape, newlines, opts) end,
       &next_rows_file/1,
       &cleanup_file_stream/1
     )
@@ -173,6 +200,9 @@ defmodule RustyCSV.Streaming do
     * `:bom` - BOM to strip if `:trim_bom` is true. Defaults to `""`.
 
     * `:trim_bom` - Whether to strip BOM from start. Defaults to `false`.
+
+    * `:max_buffer_size` - Maximum internal buffer in bytes. Defaults to
+      `268_435_456` (256 MB). Raises `:buffer_overflow` if exceeded.
 
   ## Examples
 
@@ -217,7 +247,7 @@ defmodule RustyCSV.Streaming do
         |> convert_stream_to_utf8(encoding)
       end
 
-    parser = RustyCSV.Native.streaming_new_with_config(separator, escape, newlines)
+    parser = new_parser(separator, escape, newlines, opts)
 
     Stream.transform(
       converted_enumerable,
@@ -311,6 +341,9 @@ defmodule RustyCSV.Streaming do
 
     * `:batch_size` - Maximum rows to yield per iteration. Defaults to `1000`.
 
+    * `:max_buffer_size` - Maximum internal buffer in bytes. Defaults to
+      `268_435_456` (256 MB). Raises `:buffer_overflow` if exceeded.
+
   ## Examples
 
       File.open!("data.csv", [:read, :binary], fn device ->
@@ -328,7 +361,9 @@ defmodule RustyCSV.Streaming do
     newlines = Keyword.get(opts, :newlines, :default)
 
     Stream.resource(
-      fn -> init_device_stream(device, chunk_size, batch_size, separator, escape, newlines) end,
+      fn ->
+        init_device_stream(device, chunk_size, batch_size, separator, escape, newlines, opts)
+      end,
       &next_rows_device/1,
       fn _state -> :ok end
     )
@@ -347,6 +382,8 @@ defmodule RustyCSV.Streaming do
       Defaults to `","`.
     * `:escape` - Escape/quote sequence. Accepts an integer byte (e.g., `34`) or
       a binary (e.g., `"\""`, `"$$"`). Defaults to `"` (34).
+    * `:max_buffer_size` - Maximum internal buffer in bytes. Defaults to
+      `268_435_456` (256 MB). Raises `:buffer_overflow` if exceeded.
 
   ## Examples
 
@@ -364,7 +401,7 @@ defmodule RustyCSV.Streaming do
     separator = Keyword.get(opts, :separator, <<?,>>)
     escape = Keyword.get(opts, :escape, ?")
     newlines = Keyword.get(opts, :newlines, :default)
-    parser = RustyCSV.Native.streaming_new_with_config(separator, escape, newlines)
+    parser = new_parser(separator, escape, newlines, opts)
 
     # Feed all chunks
     Enum.each(chunks, fn chunk ->
@@ -382,12 +419,26 @@ defmodule RustyCSV.Streaming do
   end
 
   # ==========================================================================
+  # Parser Creation (Private)
+  # ==========================================================================
+
+  defp new_parser(separator, escape, newlines, opts) do
+    parser = RustyCSV.Native.streaming_new_with_config(separator, escape, newlines)
+
+    if max = Keyword.get(opts, :max_buffer_size) do
+      RustyCSV.Native.streaming_set_max_buffer(parser, max)
+    end
+
+    parser
+  end
+
+  # ==========================================================================
   # File Streaming (Private)
   # ==========================================================================
 
-  defp init_file_stream(path, chunk_size, batch_size, separator, escape, newlines) do
+  defp init_file_stream(path, chunk_size, batch_size, separator, escape, newlines, opts) do
     device = File.open!(path, [:read, :binary, :raw])
-    parser = RustyCSV.Native.streaming_new_with_config(separator, escape, newlines)
+    parser = new_parser(separator, escape, newlines, opts)
     {:file, device, parser, chunk_size, batch_size}
   end
 
@@ -436,8 +487,8 @@ defmodule RustyCSV.Streaming do
   # Device Streaming (Private)
   # ==========================================================================
 
-  defp init_device_stream(device, chunk_size, batch_size, separator, escape, newlines) do
-    parser = RustyCSV.Native.streaming_new_with_config(separator, escape, newlines)
+  defp init_device_stream(device, chunk_size, batch_size, separator, escape, newlines, opts) do
+    parser = new_parser(separator, escape, newlines, opts)
     {:device, device, parser, chunk_size, batch_size}
   end
 

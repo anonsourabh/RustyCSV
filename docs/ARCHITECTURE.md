@@ -36,7 +36,7 @@ RustyCSV offers unmatched flexibility with six parsing strategies:
 
 ### Validated Correctness
 
-- **330 tests** covering RFC 4180, industry test suites, edge cases, encodings, multi-byte separators/escapes, and headers-to-maps
+- **348 tests** covering RFC 4180, industry test suites, edge cases, encodings, multi-byte separators/escapes, and headers-to-maps
 - **Cross-strategy validation** - All 6 strategies produce identical output
 - **NimbleCSV compatibility** - Verified identical behavior for all API functions
 
@@ -275,13 +275,18 @@ Key features:
 - Owns data (`Vec<u8>`) because input chunks are temporary
 - Tracks `scan_pos` to resume parsing where it left off
 - Preserves quote state across chunks
+- Enforces a configurable maximum buffer size (default 256 MB) to prevent unbounded
+  memory growth; raises `:buffer_overflow` if exceeded
+- Mutex-protected access with poisoning recovery (raises `:mutex_poisoned` instead
+  of panicking the VM)
 
 ### Strategy E: Parallel Parser
 
-Uses rayon for multi-threaded row parsing:
+Uses rayon for multi-threaded row parsing on a **dedicated thread pool** (`rustycsv-*`
+threads, capped at 8) to avoid contention with other Rayon users in the same VM:
 
 1. **Single-threaded**: Find all row boundaries (SIMD-accelerated, quote-aware)
-2. **Parallel**: Parse each row independently
+2. **Parallel**: Parse each row independently on the dedicated pool
 
 Uses `DirtyCpu` scheduler to avoid blocking normal BEAM schedulers.
 
@@ -427,17 +432,25 @@ NIFs should complete in under 1ms to avoid blocking schedulers.
 
 | Approach | Used By | Description |
 |----------|---------|-------------|
-| Dirty Schedulers | `:parallel` | Separate from normal schedulers |
+| Dirty Schedulers | All batch NIFs, `streaming_feed`, `streaming_next_rows`, `streaming_finalize` | Separate from normal schedulers |
 | Chunked Processing | streaming | Return control between chunks |
 | Stateful Resource | streaming | Let Elixir control iteration |
 | Fast SIMD | all others | Complete quickly via hardware acceleration |
 
+All 12 NIFs that process unbounded input run on dirty CPU schedulers. Only trivial O(1)
+NIFs (`streaming_new`, `streaming_status`, `streaming_set_max_buffer`, memory tracking)
+remain on the normal scheduler.
+
 ### Memory Safety
 
 - Copy-based strategies copy data to BEAM terms, then free Rust memory
-- Zero-copy strategy creates sub-binary references (no Rust allocation)
+- Zero-copy strategy creates sub-binary references with bounds-checked offsets
+  (`debug_assert!` in dev, empty-binary fallback in release)
 - Streaming parser uses `ResourceArc` with proper cleanup
+- Streaming buffer is capped at 256 MB by default (configurable via `:max_buffer_size`)
+- Mutex poisoning on streaming resources raises `:mutex_poisoned` instead of panicking
 - mimalloc wrapped in tracking allocator for observability
+- Dedicated rayon thread pool avoids contention with other Rayon users
 
 ## Benchmark Results
 

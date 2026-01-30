@@ -268,6 +268,11 @@ defmodule RustyCSV do
 
     * `:chunk_size` - Bytes per IO read for streaming. Defaults to `65536`.
     * `:batch_size` - Rows per batch for streaming. Defaults to `1000`.
+    * `:max_buffer_size` - Maximum streaming buffer size in bytes. Defaults to
+      `268_435_456` (256 MB). If the internal buffer exceeds this limit during
+      `streaming_feed/2`, a `:buffer_overflow` exception is raised. Increase
+      this if your data contains rows longer than 256 MB. Decrease it to fail
+      faster on malformed input that lacks newlines.
 
   """
   @type parse_options :: [
@@ -275,7 +280,8 @@ defmodule RustyCSV do
           strategy: strategy(),
           headers: boolean() | [atom() | String.t()],
           chunk_size: pos_integer(),
-          batch_size: pos_integer()
+          batch_size: pos_integer(),
+          max_buffer_size: pos_integer()
         ]
 
   @typedoc """
@@ -943,6 +949,8 @@ defmodule RustyCSV do
             First row skipped by default; pass `skip_headers: false` if no header row.
         * `:chunk_size` - Bytes per IO read. Defaults to `65536`.
         * `:batch_size` - Rows per batch. Defaults to `1000`.
+        * `:max_buffer_size` - Maximum streaming buffer size in bytes.
+          Defaults to `268_435_456` (256 MB). Raises if exceeded during parsing.
 
       """
       @impl RustyCSV
@@ -954,17 +962,24 @@ defmodule RustyCSV do
         chunk_size = Keyword.get(opts, :chunk_size, 64 * 1024)
         batch_size = Keyword.get(opts, :batch_size, 1000)
 
-        result_stream =
-          RustyCSV.Streaming.stream_enumerable(stream,
-            chunk_size: chunk_size,
-            batch_size: batch_size,
-            separator: @separator_binaries,
-            escape: @escape_binary,
-            newlines: @newlines_nif,
-            encoding: @encoding,
-            bom: @bom,
-            trim_bom: @trim_bom
-          )
+        stream_opts = [
+          chunk_size: chunk_size,
+          batch_size: batch_size,
+          separator: @separator_binaries,
+          escape: @escape_binary,
+          newlines: @newlines_nif,
+          encoding: @encoding,
+          bom: @bom,
+          trim_bom: @trim_bom
+        ]
+
+        stream_opts =
+          case Keyword.fetch(opts, :max_buffer_size) do
+            {:ok, max} -> Keyword.put(stream_opts, :max_buffer_size, max)
+            :error -> stream_opts
+          end
+
+        result_stream = RustyCSV.Streaming.stream_enumerable(stream, stream_opts)
 
         do_stream_with_headers(result_stream, headers, opts)
       end

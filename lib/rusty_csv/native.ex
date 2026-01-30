@@ -281,6 +281,14 @@ defmodule RustyCSV.Native do
   Returns `{available_rows, buffer_size}` indicating the number of complete
   rows ready to be taken and the current buffer size.
 
+  ## Raises
+
+    * `:buffer_overflow` — the chunk would push the internal buffer past
+      the maximum size (default 256 MB). Use `streaming_set_max_buffer/2`
+      to adjust the limit.
+    * `:mutex_poisoned` — a previous NIF call panicked while holding the
+      parser lock. The parser should be discarded.
+
   ## Examples
 
       {available, buffer_size} = RustyCSV.Native.streaming_feed(parser, chunk)
@@ -331,6 +339,13 @@ defmodule RustyCSV.Native do
   """
   @spec streaming_status(parser_ref()) :: {non_neg_integer(), non_neg_integer(), boolean()}
   def streaming_status(_parser), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Set the maximum buffer size (in bytes) for the streaming parser.
+  Default is 256 MB. Raises on overflow during `streaming_feed/2`.
+  """
+  @spec streaming_set_max_buffer(parser_ref(), non_neg_integer()) :: :ok
+  def streaming_set_max_buffer(_parser, _max), do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
   # Strategy E: Parallel Parsing

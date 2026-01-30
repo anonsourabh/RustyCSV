@@ -12,6 +12,29 @@ use crate::core::{
     parse_line_fields_owned_with_config,
 };
 use rayon::prelude::*;
+use std::sync::OnceLock;
+
+static CSV_POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
+
+pub(crate) fn get_pool() -> Option<&'static rayon::ThreadPool> {
+    CSV_POOL
+        .get_or_init(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(recommended_threads())
+                .thread_name(|i| format!("rustycsv-{i}"))
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
+/// Run a closure on the dedicated CSV thread pool, falling back to the global pool.
+pub(crate) fn run_parallel<T: Send, F: FnOnce() -> T + Send>(f: F) -> T {
+    match get_pool() {
+        Some(pool) => pool.install(f),
+        None => f(),
+    }
+}
 
 /// Parse CSV in parallel, returning owned rows
 /// The caller must convert to BEAM terms on the main scheduler thread
@@ -40,32 +63,34 @@ pub fn parse_csv_parallel_with_config(
         .collect();
 
     // Phase 2: Parse rows in parallel
-    row_ranges
-        .into_par_iter()
-        .filter_map(|(start, end)| {
-            // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
-            let mut line_end = end;
-            if line_end > start && input[line_end - 1] == b'\n' {
-                line_end -= 1;
-                if line_end > start && input[line_end - 1] == b'\r' {
+    run_parallel(|| {
+        row_ranges
+            .into_par_iter()
+            .filter_map(|(start, end)| {
+                // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
+                let mut line_end = end;
+                if line_end > start && input[line_end - 1] == b'\n' {
                     line_end -= 1;
+                    if line_end > start && input[line_end - 1] == b'\r' {
+                        line_end -= 1;
+                    }
                 }
-            }
 
-            if line_end <= start {
-                return None;
-            }
+                if line_end <= start {
+                    return None;
+                }
 
-            let line = &input[start..line_end];
-            let fields = parse_line_fields_owned_with_config(line, separator, escape);
+                let line = &input[start..line_end];
+                let fields = parse_line_fields_owned_with_config(line, separator, escape);
 
-            if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
-                None
-            } else {
-                Some(fields)
-            }
-        })
-        .collect()
+                if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
+                    None
+                } else {
+                    Some(fields)
+                }
+            })
+            .collect()
+    })
 }
 
 /// Parse CSV in parallel with multiple separator support
@@ -97,36 +122,37 @@ pub fn parse_csv_parallel_multi_sep(
     let separators_vec: Vec<u8> = separators.to_vec();
 
     // Phase 2: Parse rows in parallel
-    row_ranges
-        .into_par_iter()
-        .filter_map(|(start, end)| {
-            // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
-            let mut line_end = end;
-            if line_end > start && input[line_end - 1] == b'\n' {
-                line_end -= 1;
-                if line_end > start && input[line_end - 1] == b'\r' {
+    run_parallel(|| {
+        row_ranges
+            .into_par_iter()
+            .filter_map(|(start, end)| {
+                // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
+                let mut line_end = end;
+                if line_end > start && input[line_end - 1] == b'\n' {
                     line_end -= 1;
+                    if line_end > start && input[line_end - 1] == b'\r' {
+                        line_end -= 1;
+                    }
                 }
-            }
 
-            if line_end <= start {
-                return None;
-            }
+                if line_end <= start {
+                    return None;
+                }
 
-            let line = &input[start..line_end];
-            let fields = parse_line_fields_owned_multi_sep(line, &separators_vec, escape);
+                let line = &input[start..line_end];
+                let fields = parse_line_fields_owned_multi_sep(line, &separators_vec, escape);
 
-            if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
-                None
-            } else {
-                Some(fields)
-            }
-        })
-        .collect()
+                if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
+                    None
+                } else {
+                    Some(fields)
+                }
+            })
+            .collect()
+    })
 }
 
 /// Configure rayon thread pool size based on system
-#[allow(dead_code)]
 pub fn recommended_threads() -> usize {
     // Use available parallelism, capped at 8 for NIF work
     std::thread::available_parallelism()

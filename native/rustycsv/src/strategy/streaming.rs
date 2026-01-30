@@ -10,6 +10,9 @@
 
 use crate::core::{extract_field_owned_with_escape, is_separator};
 
+/// Default maximum buffer size for streaming parsers (256 MB).
+pub const DEFAULT_MAX_BUFFER: usize = 256 * 1024 * 1024;
+
 /// State for streaming CSV parser
 pub struct StreamingParser {
     /// Buffer holding unprocessed data
@@ -26,6 +29,8 @@ pub struct StreamingParser {
     separators: Vec<u8>,
     /// Quote/escape character
     escape: u8,
+    /// Maximum buffer size in bytes
+    max_buffer_size: usize,
 }
 
 impl StreamingParser {
@@ -44,6 +49,7 @@ impl StreamingParser {
             in_quotes: false,
             separators: vec![separator],
             escape,
+            max_buffer_size: DEFAULT_MAX_BUFFER,
         }
     }
 
@@ -57,16 +63,27 @@ impl StreamingParser {
             in_quotes: false,
             separators: separators.to_vec(),
             escape,
+            max_buffer_size: DEFAULT_MAX_BUFFER,
         }
     }
 
-    /// Feed a chunk of data to the parser
-    pub fn feed(&mut self, chunk: &[u8]) {
+    /// Feed a chunk of data to the parser.
+    /// Returns `Err(())` if the buffer would exceed `max_buffer_size`.
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), ()> {
+        if self.buffer.len() + chunk.len() > self.max_buffer_size {
+            return Err(());
+        }
         // Append chunk to buffer
         self.buffer.extend_from_slice(chunk);
 
         // Process buffer to find complete rows
         self.process_buffer();
+        Ok(())
+    }
+
+    /// Set the maximum buffer size in bytes.
+    pub fn set_max_buffer_size(&mut self, max: usize) {
+        self.max_buffer_size = max;
     }
 
     /// Process the buffer to extract complete rows
@@ -281,7 +298,7 @@ mod tests {
     #[test]
     fn test_streaming_simple() {
         let mut parser = StreamingParser::new();
-        parser.feed(b"a,b,c\n1,2,3\n");
+        parser.feed(b"a,b,c\n1,2,3\n").unwrap();
 
         let rows = parser.take_rows(10);
         assert_eq!(rows.len(), 2);
@@ -292,10 +309,10 @@ mod tests {
     #[test]
     fn test_streaming_chunked() {
         let mut parser = StreamingParser::new();
-        parser.feed(b"a,b,");
+        parser.feed(b"a,b,").unwrap();
         assert_eq!(parser.available_rows(), 0);
 
-        parser.feed(b"c\n1,2,3\n");
+        parser.feed(b"c\n1,2,3\n").unwrap();
         assert_eq!(parser.available_rows(), 2);
 
         let rows = parser.take_rows(10);
@@ -305,10 +322,10 @@ mod tests {
     #[test]
     fn test_streaming_quoted_across_chunks() {
         let mut parser = StreamingParser::new();
-        parser.feed(b"a,\"hello ");
+        parser.feed(b"a,\"hello ").unwrap();
         assert_eq!(parser.available_rows(), 0);
 
-        parser.feed(b"world\",c\n");
+        parser.feed(b"world\",c\n").unwrap();
         assert_eq!(parser.available_rows(), 1);
 
         let rows = parser.take_rows(10);
@@ -321,7 +338,7 @@ mod tests {
     #[test]
     fn test_streaming_finalize() {
         let mut parser = StreamingParser::new();
-        parser.feed(b"a,b,c\n1,2,3");
+        parser.feed(b"a,b,c\n1,2,3").unwrap();
 
         // Take complete row first
         let rows1 = parser.take_rows(10);
@@ -336,7 +353,7 @@ mod tests {
     #[test]
     fn test_streaming_crlf() {
         let mut parser = StreamingParser::new();
-        parser.feed(b"a,b\r\nc,d\r\n");
+        parser.feed(b"a,b\r\nc,d\r\n").unwrap();
 
         let rows = parser.take_rows(10);
         assert_eq!(rows.len(), 2);
@@ -345,7 +362,7 @@ mod tests {
     #[test]
     fn test_take_rows_partial() {
         let mut parser = StreamingParser::new();
-        parser.feed(b"a\nb\nc\nd\n");
+        parser.feed(b"a\nb\nc\nd\n").unwrap();
 
         let rows1 = parser.take_rows(2);
         assert_eq!(rows1.len(), 2);
@@ -357,7 +374,7 @@ mod tests {
     #[test]
     fn test_streaming_escaped_quotes() {
         let mut parser = StreamingParser::new();
-        parser.feed(b"a,\"say \"\"hi\"\"\",c\n");
+        parser.feed(b"a,\"say \"\"hi\"\"\",c\n").unwrap();
 
         let rows = parser.take_rows(10);
         assert_eq!(rows.len(), 1);
@@ -370,7 +387,7 @@ mod tests {
     #[test]
     fn test_streaming_multiline_quoted() {
         let mut parser = StreamingParser::new();
-        parser.feed(b"a,\"line1\nline2\",c\n");
+        parser.feed(b"a,\"line1\nline2\",c\n").unwrap();
 
         let rows = parser.take_rows(10);
         assert_eq!(rows.len(), 1);
@@ -384,7 +401,7 @@ mod tests {
     fn test_streaming_bare_cr_is_data() {
         // Bare \r (not followed by \n) is data, not a line ending per RFC 4180
         let mut parser = StreamingParser::new();
-        parser.feed(b"a\rb\n");
+        parser.feed(b"a\rb\n").unwrap();
 
         let rows = parser.take_rows(10);
         assert_eq!(rows.len(), 1);
@@ -395,10 +412,10 @@ mod tests {
     fn test_streaming_bare_cr_at_chunk_boundary() {
         // \r at end of chunk, \n at start of next chunk = CRLF line ending
         let mut parser = StreamingParser::new();
-        parser.feed(b"a,b\r");
+        parser.feed(b"a,b\r").unwrap();
         assert_eq!(parser.available_rows(), 0); // Can't tell yet
 
-        parser.feed(b"\nc,d\n");
+        parser.feed(b"\nc,d\n").unwrap();
         assert_eq!(parser.available_rows(), 2);
 
         let rows = parser.take_rows(10);
@@ -410,10 +427,10 @@ mod tests {
     fn test_streaming_bare_cr_at_chunk_boundary_not_crlf() {
         // \r at end of chunk, next chunk starts with non-\n = bare \r is data
         let mut parser = StreamingParser::new();
-        parser.feed(b"a\r");
+        parser.feed(b"a\r").unwrap();
         assert_eq!(parser.available_rows(), 0);
 
-        parser.feed(b"b\n");
+        parser.feed(b"b\n").unwrap();
         assert_eq!(parser.available_rows(), 1);
 
         let rows = parser.take_rows(10);

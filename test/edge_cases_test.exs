@@ -49,10 +49,9 @@ defmodule EdgeCasesTest do
     end
 
     test "quoted field with extra whitespace around quotes" do
-      # Note: space before quote is part of field, space after closing quote is trimmed by some parsers
-      result = CSV.parse_string(" \"hello\" \n", skip_headers: false)
-      # We should preserve the leading space as part of the unquoted prefix
-      assert result == [[" \"hello\" "]] or result == [[" hello "]]
+      # Space before/after the quoted region is preserved as literal characters —
+      # the field is not inside quotes, so no quote-stripping occurs.
+      assert CSV.parse_string(" \"hello\" \n", skip_headers: false) == [[" \"hello\" "]]
     end
 
     test "tabs as whitespace" do

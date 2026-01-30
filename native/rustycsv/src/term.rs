@@ -102,7 +102,18 @@ unsafe fn make_subbinary<'a>(
     input_term: Term<'a>,
     start: usize,
     len: usize,
+    input_len: usize,
 ) -> Term<'a> {
+    debug_assert!(
+        start.checked_add(len).is_some_and(|end| end <= input_len),
+        "make_subbinary out of bounds: start={start} len={len} input_len={input_len}"
+    );
+    // Release safety net: return empty binary rather than UB.
+    // This should never fire — callers validate bounds. If it does, it indicates
+    // a parser bug. The debug_assert above will catch it in dev/test builds.
+    if start.checked_add(len).is_none_or(|end| end > input_len) {
+        return NewBinary::new(env, 0).into();
+    }
     let raw_term = enif_make_sub_binary(env.as_c_arg(), input_term.as_c_arg(), start, len);
     Term::new(env, raw_term)
 }
@@ -156,12 +167,20 @@ fn field_to_term_hybrid<'a>(
             return binary.into();
         } else {
             // Quoted but no escapes: sub-binary of inner content
-            return unsafe { make_subbinary(env, input_term, start + 1, end - start - 2) };
+            return unsafe {
+                make_subbinary(
+                    env,
+                    input_term,
+                    start + 1,
+                    end - start - 2,
+                    input_bytes.len(),
+                )
+            };
         }
     }
 
     // Unquoted: direct sub-binary
-    unsafe { make_subbinary(env, input_term, start, end - start) }
+    unsafe { make_subbinary(env, input_term, start, end - start, input_bytes.len()) }
 }
 
 /// Convert field boundaries to Elixir terms using hybrid sub-binary/copy approach
@@ -231,13 +250,19 @@ fn field_to_term_hybrid_general<'a>(
         } else {
             // Quoted but no escapes: sub-binary of inner content
             return unsafe {
-                make_subbinary(env, input_term, start + esc_len, end - start - 2 * esc_len)
+                make_subbinary(
+                    env,
+                    input_term,
+                    start + esc_len,
+                    end - start - 2 * esc_len,
+                    input_bytes.len(),
+                )
             };
         }
     }
 
     // Unquoted: direct sub-binary
-    unsafe { make_subbinary(env, input_term, start, end - start) }
+    unsafe { make_subbinary(env, input_term, start, end - start, input_bytes.len()) }
 }
 
 /// Convert field boundaries to Elixir terms with multi-byte escape support

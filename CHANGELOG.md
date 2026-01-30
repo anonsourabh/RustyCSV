@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-01-29
+
+Internal safety hardening and scheduler improvements. No new user-facing features — all changes are on by default with zero configuration required.
+
+> **⚠️ Note:** Streaming parsers now enforce a 256 MB buffer cap. If your workload
+> streams chunks larger than 256 MB without any newline characters, `streaming_feed/2`
+> will raise `:buffer_overflow`. This is unlikely to affect real-world CSV data, but
+> if needed you can raise the limit with the `:max_buffer_size` option:
+>
+> ```elixir
+> CSV.parse_stream(stream, max_buffer_size: 512 * 1024 * 1024)
+> ```
+
+### Added
+
+- **Bounded streaming buffer** — streaming parsers now enforce a maximum buffer size (default 256 MB) to prevent unbounded memory growth when no newlines are encountered
+  - `streaming_feed/2` raises `:buffer_overflow` if the buffer would exceed the limit
+  - `streaming_set_max_buffer/2` — new NIF to configure the limit per parser instance
+  - Configurable via `:max_buffer_size` option on `parse_stream/2`, `stream_file/2`, `stream_enumerable/2`, and `stream_device/2`
+- **Dedicated rayon thread pool** — parallel parsing (`parse_string_parallel`, `parse_to_maps_parallel`, and general multi-byte parallel) now runs on a named `rustycsv-*` thread pool instead of the global rayon pool, avoiding contention with other Rayon users in the same VM
+- **Atoms module** — internal `mod atoms` block for DRY atom definitions (`ok`, `error`, `mutex_poisoned`, `buffer_overflow`)
+
+### Changed
+
+- **Dirty CPU scheduling** — 12 NIFs that process unbounded input now run on dirty CPU schedulers to avoid blocking normal BEAM schedulers: `parse_string`, `parse_string_with_config`, `parse_string_fast`, `parse_string_fast_with_config`, `parse_string_indexed`, `parse_string_indexed_with_config`, `parse_string_zero_copy`, `parse_string_zero_copy_with_config`, `parse_to_maps`, `streaming_feed`, `streaming_next_rows`, `streaming_finalize`
+
+### Fixed
+
+- **Mutex poisoning recovery** — streaming parser NIFs now return a `:mutex_poisoned` exception instead of panicking if a previous call panicked while holding the lock
+- **Sub-binary bounds check** — `make_subbinary` now validates `start + len <= input_len` with a `debug_assert!` in dev/test builds and a release-mode safety net that returns an empty binary instead of undefined behavior
+
 ## [0.3.1] - 2026-01-28
 
 ### Added

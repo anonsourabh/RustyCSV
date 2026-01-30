@@ -8,8 +8,17 @@
 // E: Parallel parsing via rayon (parse_string_parallel)
 // F: Zero-copy sub-binary parsing (parse_string_zero_copy)
 
-use rustler::{Binary, Env, Error, NewBinary, NifResult, ResourceArc, Term};
+use rustler::{Atom, Binary, Env, Error, NewBinary, NifResult, ResourceArc, Term};
 use std::borrow::Cow;
+
+mod atoms {
+    rustler::atoms! {
+        ok,
+        error,
+        mutex_poisoned,
+        buffer_overflow,
+    }
+}
 
 mod core;
 mod resource;
@@ -108,7 +117,17 @@ fn decode_newlines<'a>(term: Term<'a>) -> NifResult<Newlines> {
     Err(Error::BadArg)
 }
 
-use resource::{StreamingParserRef, StreamingParserResource};
+use resource::{StreamingParserEnum, StreamingParserRef, StreamingParserResource};
+
+fn lock_parser(
+    parser: &StreamingParserResource,
+) -> NifResult<std::sync::MutexGuard<'_, StreamingParserEnum>> {
+    parser
+        .inner
+        .lock()
+        .map_err(|_| Error::RaiseTerm(Box::new(atoms::mutex_poisoned())))
+}
+
 use strategy::{
     contains_escape, parse_csv, parse_csv_boundaries_general,
     parse_csv_boundaries_general_with_newlines, parse_csv_boundaries_multi_sep,
@@ -240,7 +259,7 @@ fn reset_rust_memory_stats() -> (usize, usize) {
 // ============================================================================
 
 /// Parse CSV string into list of rows (basic byte-by-byte)
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
     let rows = parse_csv(bytes);
@@ -248,7 +267,7 @@ fn parse_string<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
 }
 
 /// Parse CSV with configurable separator(s), escape, and newlines
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
@@ -286,7 +305,7 @@ fn parse_string_with_config<'a>(
 // ============================================================================
 
 /// Parse using memchr for SIMD-accelerated delimiter scanning
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_fast<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
     let rows = parse_csv_fast(bytes);
@@ -294,7 +313,7 @@ fn parse_string_fast<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>>
 }
 
 /// Parse using SIMD with configurable separator(s), escape, and newlines
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_fast_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
@@ -332,7 +351,7 @@ fn parse_string_fast_with_config<'a>(
 // ============================================================================
 
 /// Parse using two-phase approach: build index, then extract
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_indexed<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
     let rows = parse_csv_indexed(bytes);
@@ -340,7 +359,7 @@ fn parse_string_indexed<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'
 }
 
 /// Parse using two-phase with configurable separator(s), escape, and newlines
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_indexed_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
@@ -425,42 +444,53 @@ fn streaming_new_with_config<'a>(
 }
 
 /// Feed a chunk of data to the streaming parser
-#[rustler::nif]
-fn streaming_feed(parser: StreamingParserRef, chunk: Binary) -> (usize, usize) {
-    let mut inner = parser.inner.lock().unwrap();
-    inner.feed(chunk.as_slice());
-    (inner.available_rows(), inner.buffer_size())
+#[rustler::nif(schedule = "DirtyCpu")]
+fn streaming_feed(parser: StreamingParserRef, chunk: Binary) -> NifResult<(usize, usize)> {
+    let mut inner = lock_parser(&parser)?;
+    inner
+        .feed(chunk.as_slice())
+        .map_err(|_| Error::RaiseTerm(Box::new(atoms::buffer_overflow())))?;
+    Ok((inner.available_rows(), inner.buffer_size()))
 }
 
 /// Take up to `max` rows from the streaming parser
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn streaming_next_rows<'a>(
     env: Env<'a>,
     parser: StreamingParserRef,
     max: usize,
 ) -> NifResult<Term<'a>> {
-    let mut inner = parser.inner.lock().unwrap();
+    let mut inner = lock_parser(&parser)?;
     let rows = inner.take_rows(max);
     Ok(owned_rows_to_term(env, rows))
 }
 
 /// Finalize the streaming parser (get remaining partial row)
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn streaming_finalize<'a>(env: Env<'a>, parser: StreamingParserRef) -> NifResult<Term<'a>> {
-    let mut inner = parser.inner.lock().unwrap();
+    let mut inner = lock_parser(&parser)?;
     let rows = inner.finalize();
     Ok(owned_rows_to_term(env, rows))
 }
 
 /// Get streaming parser status (available_rows, buffer_size, has_partial)
 #[rustler::nif]
-fn streaming_status(parser: StreamingParserRef) -> (usize, usize, bool) {
-    let inner = parser.inner.lock().unwrap();
-    (
+fn streaming_status(parser: StreamingParserRef) -> NifResult<(usize, usize, bool)> {
+    let inner = lock_parser(&parser)?;
+    Ok((
         inner.available_rows(),
         inner.buffer_size(),
         inner.has_partial(),
-    )
+    ))
+}
+
+/// Set the maximum buffer size (in bytes) for the streaming parser.
+/// Default is 256 MB. Raises on overflow during `streaming_feed/2`.
+#[rustler::nif]
+fn streaming_set_max_buffer(parser: StreamingParserRef, max: usize) -> NifResult<Atom> {
+    let mut inner = lock_parser(&parser)?;
+    inner.set_max_buffer_size(max);
+    Ok(atoms::ok())
 }
 
 // ============================================================================
@@ -519,7 +549,7 @@ fn parse_string_parallel_with_config<'a>(
 // ============================================================================
 
 /// Parse CSV using zero-copy sub-binaries where possible
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_zero_copy<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();
     let boundaries = parse_csv_boundaries_with_config(bytes, b',', b'"');
@@ -527,7 +557,7 @@ fn parse_string_zero_copy<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term
 }
 
 /// Parse CSV using zero-copy with configurable separator(s), escape, and newlines
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_zero_copy_with_config<'a>(
     env: Env<'a>,
     input: Binary<'a>,
@@ -678,7 +708,8 @@ fn dispatch_cow_parse<'a>(
 }
 
 /// Parse CSV and return list of maps. Dispatches to strategy internally.
-#[rustler::nif]
+#[allow(clippy::too_many_arguments)]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn parse_to_maps<'a>(
     env: Env<'a>,
     input: Binary<'a>,
