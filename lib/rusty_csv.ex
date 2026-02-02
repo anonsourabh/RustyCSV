@@ -65,12 +65,43 @@ defmodule RustyCSV do
   Rust resource is protected by a mutex. However, concurrent access is
   serialized, so for maximum throughput use one parser per process.
 
-  ## Dumping
+  ## Encoding (Dumping)
 
   Convert rows back to CSV format:
 
       CSV.dump_to_iodata([["name", "age"], ["john", "27"]])
       #=> "name,age\njohn,27\n"
+
+  By default, encoding uses a SIMD-accelerated Rust NIF that scans 16–32
+  bytes at a time for characters requiring quoting. This is 93–178x faster
+  than the pure Elixir path. You can explicitly select the strategy:
+
+      # Default: NIF encoding (when available)
+      CSV.dump_to_iodata(rows)
+
+      # Force pure Elixir encoding
+      CSV.dump_to_iodata(rows, encode_strategy: :elixir)
+
+  NIF encoding is available for UTF-8 modules without `escape_formula`.
+  Other configurations automatically fall back to pure Elixir.
+
+  ### High-Throughput Concurrent Exports
+
+  The encoding NIF runs on dirty CPU schedulers with per-thread mimalloc
+  arenas, making it suitable for concurrent export workloads — e.g.,
+  thousands of users downloading CSV reports simultaneously:
+
+      # Phoenix controller — each request encodes independently
+      rows = MyApp.Reports.fetch_rows(user_id)
+      csv = MyCSV.dump_to_iodata(rows)
+      send_download(conn, {:binary, csv}, filename: "report.csv")
+
+  For very large exports, use chunked NIF encoding for bounded memory:
+
+      MyApp.Reports.stream_rows(user_id)
+      |> Stream.chunk_every(5_000)
+      |> Stream.map(&MyCSV.dump_to_iodata/1)
+      |> Enum.each(&Conn.chunk(conn, &1))
 
   ## NimbleCSV Compatibility
 
@@ -79,7 +110,7 @@ defmodule RustyCSV do
     * `parse_string/2` - Parse CSV string to list of rows
     * `parse_stream/2` - Lazily parse a stream
     * `parse_enumerable/2` - Parse any enumerable
-    * `dump_to_iodata/1` - Convert rows to iodata
+    * `dump_to_iodata/2` - Convert rows to iodata (with optional encoding strategy)
     * `dump_to_stream/1` - Lazily convert rows to iodata stream
     * `to_line_stream/1` - Convert arbitrary chunks to lines
     * `options/0` - Return module configuration
@@ -410,8 +441,18 @@ defmodule RustyCSV do
 
   @doc """
   Converts rows to iodata in CSV format.
+
+  ## Options
+
+    * `:encode_strategy` - Encoding strategy to use:
+      * `:nif` — SIMD-accelerated NIF encoding (default when available)
+      * `:elixir` — Pure Elixir encoding
+
+  NIF encoding is automatically available for UTF-8 modules without
+  `escape_formula`. Other configurations fall back to pure Elixir.
   """
   @callback dump_to_iodata(Enumerable.t()) :: iodata()
+  @callback dump_to_iodata(Enumerable.t(), keyword()) :: iodata()
 
   @doc """
   Lazily converts rows to a stream of iodata in CSV format.

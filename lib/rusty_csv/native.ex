@@ -1,6 +1,6 @@
 defmodule RustyCSV.Native do
   @moduledoc """
-  Low-level NIF bindings for CSV parsing.
+  Low-level NIF bindings for CSV parsing and encoding.
 
   This module provides direct access to the Rust NIF functions. For normal use,
   prefer the higher-level `RustyCSV.RFC4180` or custom parsers defined with

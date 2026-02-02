@@ -1,6 +1,6 @@
 # RustyCSV
 
-**Ultra-fast CSV parsing for Elixir.** A purpose-built Rust NIF with six parsing strategies, SIMD acceleration, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
+**Ultra-fast CSV parsing and encoding for Elixir.** A purpose-built Rust NIF with six parsing strategies, SIMD-accelerated encoding, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
 
 [![Hex.pm](https://img.shields.io/hexpm/v/rusty_csv.svg)](https://hex.pm/packages/rusty_csv)
 [![Tests](https://img.shields.io/badge/tests-367%20passed-brightgreen.svg)]()
@@ -37,6 +37,7 @@
 | **Multi-separator support** | ✅ `[",", ";"]`, `"::"` | ✅ |
 | **Encoding support** | ✅ UTF-8, UTF-16, Latin-1, UTF-32 | ✅ |
 | **Memory model** | ✅ Choice of copy or sub-binary | Sub-binary only |
+| **SIMD-accelerated encoding** | ✅ 93-178x faster than Elixir | ❌ |
 | **High-performance allocator** | ✅ mimalloc | System |
 | **Drop-in replacement** | ✅ Same API | - |
 | **Headers-to-maps** | ✅ `headers: true` or explicit keys | ❌ |
@@ -143,7 +144,7 @@ All NimbleCSV functions are supported:
 | `parse_string/2` | Parse CSV string to list of rows (or maps with `headers:`) |
 | `parse_stream/2` | Lazily parse a stream (or maps with `headers:`) |
 | `parse_enumerable/2` | Parse any enumerable |
-| `dump_to_iodata/1` | Convert rows to iodata |
+| `dump_to_iodata/2` | Convert rows to iodata (with optional encoding strategy) |
 | `dump_to_stream/1` | Lazily convert rows to iodata stream |
 | `to_line_stream/1` | Convert arbitrary chunks to lines |
 | `options/0` | Return module configuration |
@@ -379,6 +380,68 @@ Each strategy takes a different approach. All share direct term building (no int
 - Tracks quote state across chunk boundaries
 - Copies field data (since input chunks are temporary)
 
+## NIF-Accelerated Encoding
+
+RustyCSV uses a SIMD-accelerated Rust NIF for CSV encoding, scanning 16–32 bytes at a time to detect characters that need quoting. This is **93–178x faster** than the pure Elixir encoding path on typical workloads.
+
+NIF encoding is used automatically for UTF-8 modules without `escape_formula`. You can explicitly select the strategy:
+
+```elixir
+# Default: uses NIF when available
+CSV.dump_to_iodata(rows)
+
+# Force pure Elixir encoding
+CSV.dump_to_iodata(rows, encode_strategy: :elixir)
+```
+
+For non-UTF-8 encodings or modules with `escape_formula`, RustyCSV automatically falls back to pure Elixir encoding.
+
+### High-Throughput Concurrent Exports
+
+RustyCSV's encoding NIF runs on BEAM dirty CPU schedulers with per-thread mimalloc arenas, making it well-suited for concurrent export workloads (e.g., thousands of users downloading CSV reports simultaneously in a Phoenix application):
+
+```elixir
+# Phoenix controller — concurrent CSV download
+def export(conn, %{"id" => id}) do
+  rows = MyApp.Reports.fetch_rows(id)
+  csv = MyCSV.dump_to_iodata(rows)
+
+  conn
+  |> put_resp_content_type("text/csv")
+  |> put_resp_header("content-disposition", ~s(attachment; filename="report.csv"))
+  |> send_resp(200, csv)
+end
+```
+
+For very large exports where you want bounded memory, use chunked NIF encoding:
+
+```elixir
+# Chunked encoding — bounded memory with NIF speed
+def stream_export(conn, %{"id" => id}) do
+  conn = conn
+  |> put_resp_content_type("text/csv")
+  |> put_resp_header("content-disposition", ~s(attachment; filename="report.csv"))
+  |> send_chunked(200)
+
+  MyApp.Reports.stream_rows(id)
+  |> Stream.chunk_every(5_000)
+  |> Stream.each(fn chunk ->
+    csv = MyCSV.dump_to_iodata(chunk)
+    Conn.chunk(conn, csv)
+  end)
+  |> Stream.run()
+
+  conn
+end
+```
+
+**Key characteristics for concurrent workloads:**
+
+- Each NIF call is independent — no shared mutable state between requests
+- Dirty CPU schedulers prevent encoding from blocking normal BEAM schedulers
+- mimalloc's per-thread arenas avoid allocator contention under concurrency
+- The real bottleneck is typically DB queries and connection pool sizing, not CSV encoding
+
 ## Architecture
 
 RustyCSV is built with a modular Rust architecture:
@@ -398,7 +461,8 @@ native/rustycsv/src/
 │   ├── streaming.rs       # Stateful streaming parser (single-byte)
 │   ├── parallel.rs        # Rayon-based parallel parsing (single-byte)
 │   ├── zero_copy.rs       # Sub-binary reference parsing (single-byte)
-│   └── general.rs         # Multi-byte separator/escape (all strategies)
+│   ├── general.rs         # Multi-byte separator/escape (all strategies)
+│   └── encode.rs          # SIMD-accelerated CSV encoding
 ├── term.rs                # BEAM term building (copy + sub-binary)
 └── resource.rs            # ResourceArc for streaming state
 ```
