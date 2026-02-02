@@ -40,6 +40,10 @@ jobs:
       with:
         elixir-version: ${{matrix.pair.elixir}}
         otp-version: ${{matrix.pair.otp}}
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rustfmt, clippy
     - name: Restore Elixir dependencies cache
       uses: actions/cache@v4
       with:
