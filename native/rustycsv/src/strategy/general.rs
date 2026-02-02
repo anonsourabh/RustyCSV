@@ -299,8 +299,14 @@ pub fn parse_csv_indexed_general<'a>(
 // Strategy E: General parallel parsing
 // ============================================================================
 
-/// Find all row start positions with multi-byte escape
-pub fn find_row_starts_general(input: &[u8], escape: &[u8]) -> Vec<usize> {
+/// Core row-start finder: walks input with quote tracking, calling `check_newline`
+/// at each unquoted position. `check_newline(input, pos)` returns the newline length
+/// (0 if no newline at that position). Monomorphized per call site — zero overhead.
+fn find_row_starts_general_inner(
+    input: &[u8],
+    escape: &[u8],
+    check_newline: impl Fn(&[u8], usize) -> usize,
+) -> Vec<usize> {
     let mut starts = Vec::with_capacity(input.len() / 50 + 1);
     starts.push(0);
     let mut pos = 0;
@@ -322,23 +328,37 @@ pub fn find_row_starts_general(input: &[u8], escape: &[u8]) -> Vec<usize> {
         } else if starts_with_escape(input, pos, escape) {
             in_quotes = true;
             pos += esc_len;
-        } else if input[pos] == b'\n' {
-            pos += 1;
-            if pos < input.len() {
-                starts.push(pos);
-            }
-        } else if input[pos] == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
-            // CRLF: end of row. Bare \r is data per RFC 4180.
-            pos += 2;
-            if pos < input.len() {
-                starts.push(pos);
-            }
         } else {
-            pos += 1;
+            let nl_len = check_newline(input, pos);
+            if nl_len > 0 {
+                pos += nl_len;
+                if pos < input.len() {
+                    starts.push(pos);
+                }
+            } else {
+                pos += 1;
+            }
         }
     }
 
     starts
+}
+
+/// Default newline check: \n (len 1) or \r\n (len 2). Bare \r is data per RFC 4180.
+#[inline]
+fn default_newline_len(input: &[u8], pos: usize) -> usize {
+    if input[pos] == b'\n' {
+        1
+    } else if input[pos] == b'\r' && pos + 1 < input.len() && input[pos + 1] == b'\n' {
+        2
+    } else {
+        0
+    }
+}
+
+/// Find all row start positions with multi-byte escape
+pub fn find_row_starts_general(input: &[u8], escape: &[u8]) -> Vec<usize> {
+    find_row_starts_general_inner(input, escape, default_newline_len)
 }
 
 /// Parse a single line into owned fields with multi-byte separator/escape support
@@ -552,9 +572,9 @@ impl GeneralStreamingParser {
         }
     }
 
-    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), ()> {
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), super::streaming::BufferOverflow> {
         if self.buffer.len() + chunk.len() > self.max_buffer_size {
-            return Err(());
+            return Err(super::streaming::BufferOverflow);
         }
         self.buffer.extend_from_slice(chunk);
         self.process_buffer();
@@ -853,41 +873,9 @@ pub fn find_row_starts_general_with_newlines(
     escape: &[u8],
     newlines: &Newlines,
 ) -> Vec<usize> {
-    let mut starts = Vec::with_capacity(input.len() / 50 + 1);
-    starts.push(0);
-    let mut pos = 0;
-    let mut in_quotes = false;
-    let esc_len = escape.len();
-
-    while pos < input.len() {
-        if in_quotes {
-            if starts_with_escape(input, pos, escape) {
-                if starts_with_escape(input, pos + esc_len, escape) {
-                    pos += 2 * esc_len;
-                    continue;
-                }
-                in_quotes = false;
-                pos += esc_len;
-            } else {
-                pos += 1;
-            }
-        } else if starts_with_escape(input, pos, escape) {
-            in_quotes = true;
-            pos += esc_len;
-        } else {
-            let nl_len = match_newline(input, pos, newlines);
-            if nl_len > 0 {
-                pos += nl_len;
-                if pos < input.len() {
-                    starts.push(pos);
-                }
-            } else {
-                pos += 1;
-            }
-        }
-    }
-
-    starts
+    find_row_starts_general_inner(input, escape, |input, pos| {
+        match_newline(input, pos, newlines)
+    })
 }
 
 /// Parallel parser with custom newlines.
@@ -1054,9 +1042,9 @@ impl GeneralStreamingParserNewlines {
         }
     }
 
-    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), ()> {
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), super::streaming::BufferOverflow> {
         if self.buffer.len() + chunk.len() > self.max_buffer_size {
-            return Err(());
+            return Err(super::streaming::BufferOverflow);
         }
         self.buffer.extend_from_slice(chunk);
         self.process_buffer();
@@ -1194,26 +1182,8 @@ mod tests {
             .collect()
     }
 
-    fn to_strings_owned(rows: Vec<Vec<Vec<u8>>>) -> Vec<Vec<String>> {
-        rows.into_iter()
-            .map(|row| {
-                row.into_iter()
-                    .map(|f| String::from_utf8_lossy(&f).to_string())
-                    .collect()
-            })
-            .collect()
-    }
-
-    // --- Multi-byte separator tests ---
-
-    #[test]
-    fn test_general_double_colon_separator() {
-        let input = b"a::b::c\n1::2::3\n";
-        let seps = vec![b"::".to_vec()];
-        let esc = b"\"".to_vec();
-        let result = to_strings(parse_csv_general(input, &seps, &esc));
-        assert_eq!(result, vec![vec!["a", "b", "c"], vec!["1", "2", "3"]]);
-    }
+    // Common cross-strategy scenarios moved to tests/conformance.rs.
+    // Only unique general-specific tests remain here.
 
     #[test]
     fn test_general_mixed_separators() {
@@ -1254,55 +1224,6 @@ mod tests {
         assert_eq!(result, vec![vec!["val$$ue", "other"]]);
     }
 
-    // --- Indexed strategy tests ---
-
-    #[test]
-    fn test_indexed_general() {
-        let input = b"a::b::c\n1::2::3\n";
-        let seps = vec![b"::".to_vec()];
-        let esc = b"\"".to_vec();
-        let result = to_strings(parse_csv_indexed_general(input, &seps, &esc));
-        assert_eq!(result, vec![vec!["a", "b", "c"], vec!["1", "2", "3"]]);
-    }
-
-    // --- Parallel strategy tests ---
-
-    #[test]
-    fn test_parallel_general() {
-        let input = b"a::b::c\n1::2::3\n";
-        let seps = vec![b"::".to_vec()];
-        let esc = b"\"".to_vec();
-        let result = to_strings_owned(parse_csv_parallel_general(input, &seps, &esc));
-        assert_eq!(result, vec![vec!["a", "b", "c"], vec!["1", "2", "3"]]);
-    }
-
-    // --- Boundaries strategy tests ---
-
-    #[test]
-    fn test_boundaries_general() {
-        let input = b"a::b::c\n1::2::3\n";
-        let seps = vec![b"::".to_vec()];
-        let esc = b"\"".to_vec();
-        let boundaries = parse_csv_boundaries_general(input, &seps, &esc);
-        assert_eq!(boundaries.len(), 2);
-        // First row: "a" at 0..1, "b" at 3..4, "c" at 6..7
-        assert_eq!(boundaries[0], vec![(0, 1), (3, 4), (6, 7)]);
-    }
-
-    // --- Streaming tests ---
-
-    #[test]
-    fn test_streaming_general() {
-        let seps = vec![b"::".to_vec()];
-        let esc = b"\"".to_vec();
-        let mut parser = GeneralStreamingParser::new(seps, esc);
-        parser.feed(b"a::b::c\n1::2::3\n").unwrap();
-
-        let rows = parser.take_rows(10);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
-    }
-
     #[test]
     fn test_streaming_general_chunked() {
         let seps = vec![b"::".to_vec()];
@@ -1334,16 +1255,6 @@ mod tests {
     // --- Custom newline tests ---
 
     #[test]
-    fn test_custom_newline_pipe() {
-        let nl = Newlines::custom(vec![b"|".to_vec()]);
-        let input = b"a,b|1,2|";
-        let seps = vec![b",".to_vec()];
-        let esc = b"\"".to_vec();
-        let result = to_strings(parse_csv_general_with_newlines(input, &seps, &esc, &nl));
-        assert_eq!(result, vec![vec!["a", "b"], vec!["1", "2"]]);
-    }
-
-    #[test]
     fn test_custom_newline_multi_byte() {
         let nl = Newlines::custom(vec![b"<br>".to_vec()]);
         let input = b"a,b<br>1,2<br>";
@@ -1371,55 +1282,6 @@ mod tests {
         let esc = b"\"".to_vec();
         let result = to_strings(parse_csv_general_with_newlines(input, &seps, &esc, &nl));
         assert_eq!(result, vec![vec!["a|b", "c"], vec!["1", "2"]]);
-    }
-
-    #[test]
-    fn test_custom_newline_indexed() {
-        let nl = Newlines::custom(vec![b"|".to_vec()]);
-        let input = b"a,b|1,2|";
-        let seps = vec![b",".to_vec()];
-        let esc = b"\"".to_vec();
-        let result = to_strings(parse_csv_indexed_general_with_newlines(
-            input, &seps, &esc, &nl,
-        ));
-        assert_eq!(result, vec![vec!["a", "b"], vec!["1", "2"]]);
-    }
-
-    #[test]
-    fn test_custom_newline_parallel() {
-        let nl = Newlines::custom(vec![b"|".to_vec()]);
-        let input = b"a,b|1,2|";
-        let seps = vec![b",".to_vec()];
-        let esc = b"\"".to_vec();
-        let result = to_strings_owned(parse_csv_parallel_general_with_newlines(
-            input, &seps, &esc, &nl,
-        ));
-        assert_eq!(result, vec![vec!["a", "b"], vec!["1", "2"]]);
-    }
-
-    #[test]
-    fn test_custom_newline_boundaries() {
-        let nl = Newlines::custom(vec![b"|".to_vec()]);
-        let input = b"a,b|1,2|";
-        let seps = vec![b",".to_vec()];
-        let esc = b"\"".to_vec();
-        let boundaries = parse_csv_boundaries_general_with_newlines(input, &seps, &esc, &nl);
-        assert_eq!(boundaries.len(), 2);
-        assert_eq!(boundaries[0], vec![(0, 1), (2, 3)]);
-        assert_eq!(boundaries[1], vec![(4, 5), (6, 7)]);
-    }
-
-    #[test]
-    fn test_custom_newline_streaming() {
-        let nl = Newlines::custom(vec![b"|".to_vec()]);
-        let seps = vec![b",".to_vec()];
-        let esc = b"\"".to_vec();
-        let mut parser = GeneralStreamingParserNewlines::new(seps, esc, nl);
-        parser.feed(b"a,b|1,2|").unwrap();
-        let rows = parser.take_rows(10);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec()]);
-        assert_eq!(rows[1], vec![b"1".to_vec(), b"2".to_vec()]);
     }
 
     #[test]

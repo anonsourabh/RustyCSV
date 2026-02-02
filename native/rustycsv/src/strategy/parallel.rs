@@ -1,16 +1,36 @@
-// Approach E: Parallel Parser using Rayon
+// Parallel Parser using Rayon
 //
 // Strategy:
-// 1. Single-threaded: Find all row boundaries (must handle quotes correctly)
-// 2. Parallel: Parse each row independently using rayon
+// 1. Single-threaded: SIMD structural scan → row boundaries + field separator positions
+// 2. O(n) cursor walk: collect (row_start, content_end, sep_lo, sep_hi) into a flat Vec
+// 3. Parallel: Each worker slices into the shared field_seps array — no re-scanning
+//
+// ## Evolution of field-position reuse from the structural index
+//
+// The SIMD structural scanner already finds every separator position. We tried
+// three approaches to reuse those positions instead of re-scanning with memchr:
+//
+// Approach A — Pre-collect Vec<Vec<(u32, u32)>> field bounds, then par_iter:
+//   Simple CSV: 567 → 464 ips (-18%)
+//   Large 7MB:  40.6 → 38.0 ips (-6%)
+//   Cause: 10K+ inner Vec allocations for per-row field bounds.
+//
+// Approach B — Share &StructuralIndex, each worker calls fields_in_row() (binary search):
+//   Simple CSV: 567 → 503 ips (-11%)
+//   Large 7MB:  40.6 → 35.7 ips (-12%)
+//   Very Large: 1.99 → 1.80 ips (-10%)
+//   Cause: Two partition_point calls per row = O(log n) per row.
+//
+// Approach C (current) — Flat index + direct slice:
+//   O(n) cursor walk builds a single flat Vec<(u32, u32, usize, usize)> mapping
+//   each row to its slice of field_seps. Each parallel worker indexes directly
+//   into the shared &[u32] — zero per-row allocation, O(1) lookup, no re-scanning.
+//   This avoids A's allocation overhead and B's binary search overhead.
 //
 // Important: We can't build BEAM terms on worker threads, so we return
 // owned Vec<Vec<Vec<u8>>> and convert to terms on the scheduler thread.
 
-use crate::core::{
-    find_row_starts_with_escape, parse_line_fields_owned_multi_sep,
-    parse_line_fields_owned_with_config,
-};
+use crate::core::{extract_field_owned_with_escape, scan_structural};
 use rayon::prelude::*;
 use std::sync::OnceLock;
 
@@ -37,7 +57,6 @@ pub(crate) fn run_parallel<T: Send, F: FnOnce() -> T + Send>(f: F) -> T {
 }
 
 /// Parse CSV in parallel, returning owned rows
-/// The caller must convert to BEAM terms on the main scheduler thread
 pub fn parse_csv_parallel(input: &[u8]) -> Vec<Vec<Vec<u8>>> {
     parse_csv_parallel_with_config(input, b',', b'"')
 }
@@ -48,46 +67,55 @@ pub fn parse_csv_parallel_with_config(
     separator: u8,
     escape: u8,
 ) -> Vec<Vec<Vec<u8>>> {
-    // Phase 1: Find row boundaries (single-threaded, quote-aware)
-    let row_starts = find_row_starts_with_escape(input, escape);
+    // Phase 1: SIMD structural scan → row boundaries + field separator positions
+    let idx = scan_structural(input, &[separator], escape);
+    let field_seps: &[u32] = &idx.field_seps;
 
-    if row_starts.is_empty() {
+    // Phase 2: O(n) cursor walk — map each row to its slice of field_seps
+    let mut row_ranges: Vec<(u32, u32, usize, usize)> = Vec::with_capacity(idx.row_count());
+    let mut sep_cursor: usize = 0;
+    for (rs, re, _next) in idx.rows() {
+        let sep_start = sep_cursor;
+        while sep_cursor < field_seps.len() && field_seps[sep_cursor] < re {
+            sep_cursor += 1;
+        }
+        row_ranges.push((rs, re, sep_start, sep_cursor));
+    }
+
+    if row_ranges.is_empty() {
         return Vec::new();
     }
 
-    // Build (start, end) pairs for each row
-    let &last_start = match row_starts.last() {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-    let row_ranges: Vec<(usize, usize)> = row_starts
-        .windows(2)
-        .map(|w| (w[0], w[1]))
-        .chain(std::iter::once((last_start, input.len())))
-        .collect();
-
-    // Phase 2: Parse rows in parallel
+    // Phase 3: Parallel field extraction — each worker slices into shared field_seps
     run_parallel(|| {
         row_ranges
             .into_par_iter()
-            .filter_map(|(start, end)| {
-                // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
-                let mut line_end = end;
-                if line_end > start && input[line_end - 1] == b'\n' {
-                    line_end -= 1;
-                    if line_end > start && input[line_end - 1] == b'\r' {
-                        line_end -= 1;
-                    }
-                }
-
-                if line_end <= start {
+            .filter_map(|(rs, re, sep_lo, sep_hi)| {
+                let (row_start, content_end) = (rs as usize, re as usize);
+                if content_end <= row_start {
                     return None;
                 }
 
-                let line = &input[start..line_end];
-                let fields = parse_line_fields_owned_with_config(line, separator, escape);
+                let seps = &field_seps[sep_lo..sep_hi];
+                let mut fields = Vec::with_capacity(seps.len() + 1);
+                let mut pos = row_start;
+                for &sep_pos in seps {
+                    fields.push(extract_field_owned_with_escape(
+                        input,
+                        pos,
+                        sep_pos as usize,
+                        escape,
+                    ));
+                    pos = sep_pos as usize + 1;
+                }
+                fields.push(extract_field_owned_with_escape(
+                    input,
+                    pos,
+                    content_end,
+                    escape,
+                ));
 
-                if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
+                if fields.len() == 1 && fields[0].is_empty() {
                     None
                 } else {
                     Some(fields)
@@ -103,54 +131,59 @@ pub fn parse_csv_parallel_multi_sep(
     separators: &[u8],
     escape: u8,
 ) -> Vec<Vec<Vec<u8>>> {
-    // Optimize for single separator case
     if separators.len() == 1 {
         return parse_csv_parallel_with_config(input, separators[0], escape);
     }
 
-    // Phase 1: Find row boundaries (single-threaded, quote-aware)
-    let row_starts = find_row_starts_with_escape(input, escape);
+    // Phase 1: SIMD structural scan → row boundaries + field separator positions
+    let idx = scan_structural(input, separators, escape);
+    let field_seps: &[u32] = &idx.field_seps;
 
-    if row_starts.is_empty() {
+    // Phase 2: O(n) cursor walk — map each row to its slice of field_seps
+    let mut row_ranges: Vec<(u32, u32, usize, usize)> = Vec::with_capacity(idx.row_count());
+    let mut sep_cursor: usize = 0;
+    for (rs, re, _next) in idx.rows() {
+        let sep_start = sep_cursor;
+        while sep_cursor < field_seps.len() && field_seps[sep_cursor] < re {
+            sep_cursor += 1;
+        }
+        row_ranges.push((rs, re, sep_start, sep_cursor));
+    }
+
+    if row_ranges.is_empty() {
         return Vec::new();
     }
 
-    // Build (start, end) pairs for each row
-    let &last_start = match row_starts.last() {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-    let row_ranges: Vec<(usize, usize)> = row_starts
-        .windows(2)
-        .map(|w| (w[0], w[1]))
-        .chain(std::iter::once((last_start, input.len())))
-        .collect();
-
-    // Clone separators for thread safety
-    let separators_vec: Vec<u8> = separators.to_vec();
-
-    // Phase 2: Parse rows in parallel
+    // Phase 3: Parallel field extraction — each worker slices into shared field_seps
     run_parallel(|| {
         row_ranges
             .into_par_iter()
-            .filter_map(|(start, end)| {
-                // Strip trailing line ending (\n or \r\n). Bare \r is data per RFC 4180.
-                let mut line_end = end;
-                if line_end > start && input[line_end - 1] == b'\n' {
-                    line_end -= 1;
-                    if line_end > start && input[line_end - 1] == b'\r' {
-                        line_end -= 1;
-                    }
-                }
-
-                if line_end <= start {
+            .filter_map(|(rs, re, sep_lo, sep_hi)| {
+                let (row_start, content_end) = (rs as usize, re as usize);
+                if content_end <= row_start {
                     return None;
                 }
 
-                let line = &input[start..line_end];
-                let fields = parse_line_fields_owned_multi_sep(line, &separators_vec, escape);
+                let seps = &field_seps[sep_lo..sep_hi];
+                let mut fields = Vec::with_capacity(seps.len() + 1);
+                let mut pos = row_start;
+                for &sep_pos in seps {
+                    fields.push(extract_field_owned_with_escape(
+                        input,
+                        pos,
+                        sep_pos as usize,
+                        escape,
+                    ));
+                    pos = sep_pos as usize + 1;
+                }
+                fields.push(extract_field_owned_with_escape(
+                    input,
+                    pos,
+                    content_end,
+                    escape,
+                ));
 
-                if fields.is_empty() || (fields.len() == 1 && fields[0].is_empty()) {
+                if fields.len() == 1 && fields[0].is_empty() {
                     None
                 } else {
                     Some(fields)
@@ -162,7 +195,6 @@ pub fn parse_csv_parallel_multi_sep(
 
 /// Configure rayon thread pool size based on system
 pub fn recommended_threads() -> usize {
-    // Use available parallelism, capped at 8 for NIF work
     std::thread::available_parallelism()
         .map(|p| p.get().min(8))
         .unwrap_or(4)
@@ -172,33 +204,11 @@ pub fn recommended_threads() -> usize {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_parallel_simple() {
-        let input = b"a,b,c\n1,2,3\n";
-        let rows = parse_csv_parallel(input);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
-        assert_eq!(rows[1], vec![b"1".to_vec(), b"2".to_vec(), b"3".to_vec()]);
-    }
-
-    #[test]
-    fn test_parallel_quoted() {
-        let input = b"a,\"b,c\",d\n1,2,3\n";
-        let rows = parse_csv_parallel(input);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], vec![b"a".to_vec(), b"b,c".to_vec(), b"d".to_vec()]);
-    }
-
-    #[test]
-    fn test_parallel_no_trailing_newline() {
-        let input = b"a,b\nc,d";
-        let rows = parse_csv_parallel(input);
-        assert_eq!(rows.len(), 2);
-    }
+    // Common scenarios moved to tests/conformance.rs.
+    // Only unique parallel-specific tests remain here.
 
     #[test]
     fn test_parallel_many_rows() {
-        // Generate many rows to actually exercise parallelism
         let mut input = Vec::new();
         for i in 0..1000 {
             input.extend_from_slice(format!("{},{},{}\n", i, i + 1, i + 2).as_bytes());
@@ -210,18 +220,6 @@ mod tests {
         assert_eq!(
             rows[999],
             vec![b"999".to_vec(), b"1000".to_vec(), b"1001".to_vec()]
-        );
-    }
-
-    #[test]
-    fn test_parallel_quoted_newline() {
-        // Quoted field containing newline - must be handled correctly
-        let input = b"a,\"line1\nline2\",c\nd,e,f\n";
-        let rows = parse_csv_parallel(input);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(
-            rows[0],
-            vec![b"a".to_vec(), b"line1\nline2".to_vec(), b"c".to_vec()]
         );
     }
 }

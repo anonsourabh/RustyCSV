@@ -3,7 +3,15 @@
 pub mod field;
 pub mod newlines;
 pub mod scanner;
+pub mod simd_index;
+pub mod simd_scanner;
 
 pub use field::*;
 pub use newlines::*;
 pub use scanner::*;
+pub use simd_index::StructuralIndex;
+pub use simd_scanner::scan_structural;
+#[allow(unused_imports)]
+pub use simd_index::RowEnd;
+#[allow(unused_imports)]
+pub use simd_scanner::scan_structural_incremental;

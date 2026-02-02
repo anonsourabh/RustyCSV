@@ -1,7 +1,7 @@
 defmodule RustyCSV.MixProject do
   use Mix.Project
 
-  @version "0.3.3"
+  @version "0.3.4"
   @source_url "https://github.com/jeffhuen/rustycsv"
 
   def project do
@@ -42,13 +42,14 @@ defmodule RustyCSV.MixProject do
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
-        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
+        "Changelog" => "https://hexdocs.pm/rusty_csv/changelog.html"
       },
       files: ~w(
         lib
         native/rustycsv/src
         native/rustycsv/Cargo.toml
         native/rustycsv/Cargo.lock
+        native/rustycsv/rust-toolchain.toml
         checksum-Elixir.RustyCSV.Native.exs
         .formatter.exs
         mix.exs

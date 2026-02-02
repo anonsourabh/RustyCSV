@@ -3,7 +3,7 @@
 **Ultra-fast CSV parsing for Elixir.** A purpose-built Rust NIF with six parsing strategies, SIMD acceleration, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
 
 [![Hex.pm](https://img.shields.io/hexpm/v/rusty_csv.svg)](https://hex.pm/packages/rusty_csv)
-[![Tests](https://img.shields.io/badge/tests-348%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-367%20passed-brightgreen.svg)]()
 [![RFC 4180](https://img.shields.io/badge/RFC%204180-compliant-blue.svg)]()
 
 ## Why RustyCSV?
@@ -31,7 +31,7 @@
 | Feature | RustyCSV | NimbleCSV |
 |---------|----------|-----------|
 | **Parsing strategies** | 6 (SIMD, parallel, streaming, indexed, zero_copy, basic) | 1 |
-| **SIMD acceleration** | ✅ via memchr | ❌ |
+| **SIMD acceleration** | ✅ via `std::simd` portable SIMD | ❌ |
 | **Parallel parsing** | ✅ via rayon | ❌ |
 | **Streaming (bounded memory)** | ✅ | ❌ (requires full file in memory) |
 | **Multi-separator support** | ✅ `[",", ";"]`, `"::"` | ✅ |
@@ -40,7 +40,7 @@
 | **High-performance allocator** | ✅ mimalloc | System |
 | **Drop-in replacement** | ✅ Same API | - |
 | **Headers-to-maps** | ✅ `headers: true` or explicit keys | ❌ |
-| **RFC 4180 compliant** | ✅ 348 tests | ✅ |
+| **RFC 4180 compliant** | ✅ 367 tests | ✅ |
 | **Benchmark (7MB CSV)** | ~24ms | ~219ms |
 
 ## Purpose-Built for Elixir
@@ -58,7 +58,7 @@ Choose the right tool for the job:
 
 | Strategy | Use Case | How It Works |
 |----------|----------|--------------|
-| `:simd` | **Default.** Fastest for most files | SIMD-accelerated delimiter scanning via `memchr` |
+| `:simd` | **Default.** Fastest for most files | Single-pass SIMD structural scanner via `std::simd` |
 | `:parallel` | Files 500MB+ with complex quoting | Multi-threaded row parsing via `rayon` |
 | `:streaming` | Unbounded/huge files | Bounded-memory chunk processing |
 | `:indexed` | Re-extracting row ranges | Two-phase index-then-extract |
@@ -85,11 +85,11 @@ File.stream!("huge.csv") |> CSV.parse_stream()   # Bounded memory
 
 ```elixir
 def deps do
-  [{:rusty_csv, "~> 0.3.3"}]
+  [{:rusty_csv, "~> 0.3.4"}]
 end
 ```
 
-Requires Rust 1.70+ (automatically compiled via Rustler).
+Requires Rust nightly (for `std::simd` portable SIMD — see [note on stabilization](#simd-and-rust-nightly)). Automatically compiled via Rustler.
 
 ## Quick Start
 
@@ -314,17 +314,20 @@ RustyCSV is **fully RFC 4180 compliant** and validated against industry-standard
 
 | Test Suite | Tests | Status |
 |------------|-------|--------|
-| [csv-spectrum](https://github.com/max-mapper/csv-spectrum) | 12 | ✅ All pass |
-| [csv-test-data](https://github.com/sineemore/csv-test-data) | 17 | ✅ All pass |
+| [csv-spectrum](https://github.com/max-mapper/csv-spectrum) | 17 | ✅ All pass |
+| [csv-test-data](https://github.com/sineemore/csv-test-data) | 23 | ✅ All pass |
 | Edge cases (PapaParse-inspired) | 53 | ✅ All pass |
 | Core + NimbleCSV compat | 36 | ✅ All pass |
 | Encoding (UTF-16, Latin-1, etc.) | 20 | ✅ All pass |
 | Multi-separator support | 19 | ✅ All pass |
-| Multi-byte separator | 16 | ✅ All pass |
-| Multi-byte escape | 14 | ✅ All pass |
+| Multi-byte separator | 13 | ✅ All pass |
+| Multi-byte escape | 12 | ✅ All pass |
 | Native API separator/escape | 40 | ✅ All pass |
 | Headers-to-maps | 97 | ✅ All pass |
-| **Total** | **348** | ✅ |
+| Custom newlines | 18 | ✅ All pass |
+| Streaming safety | 12 | ✅ All pass |
+| Concurrent access | 7 | ✅ All pass |
+| **Total** | **367** | ✅ |
 
 See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for full compliance details.
 
@@ -350,20 +353,21 @@ Each strategy takes a different approach. All share direct term building (no int
 | Strategy | Scanning | Parsing | Memory | Best For |
 |----------|----------|---------|--------|----------|
 | `:basic` | Byte-by-byte | Sequential | O(n) | Debugging, correctness reference |
-| `:simd` | SIMD via [memchr](https://docs.rs/memchr) | Sequential | O(n) | Default, fastest for most files |
-| `:indexed` | SIMD | Two-phase (index, then extract) | O(n) + index | Re-extracting row ranges |
-| `:parallel` | SIMD via [memchr3](https://docs.rs/memchr) | Multi-threaded via [rayon](https://docs.rs/rayon) | O(n) | Very large files (500MB+) with complex quoting |
+| `:simd` | SIMD structural scanner via [`std::simd`](https://doc.rust-lang.org/std/simd/index.html) | Sequential | O(n) | Default, fastest for most files |
+| `:indexed` | SIMD structural scanner | Two-phase (index, then extract) | O(n) + index | Re-extracting row ranges |
+| `:parallel` | SIMD structural scanner | Multi-threaded via [rayon](https://docs.rs/rayon) | O(n) | Very large files (500MB+) with complex quoting |
 | `:zero_copy` | SIMD | Sub-binary references | O(n) | Maximum speed, short-lived data |
 | `:streaming` | Byte-by-byte | Stateful chunks | O(chunk) | Unbounded/huge files |
 
 **Shared across all strategies:**
+- Single-pass SIMD structural scanner shared across all batch strategies (finds all unquoted separators and row endings in one sweep)
 - `Cow<[u8]>` for zero-copy field extraction when no unescaping needed
 - Direct Erlang term construction via Rustler (no serde)
 - [mimalloc](https://github.com/microsoft/mimalloc) high-performance allocator
 
 **`:parallel` specifics:**
 - Runs on dirty CPU schedulers to avoid blocking BEAM
-- Row boundaries found via SIMD-accelerated `memchr3` (quote-aware), then rows parsed in parallel
+- Uses shared SIMD structural scan for row boundaries + field separator positions, then slices into the shared index for parallel field extraction via rayon (no re-scanning)
 
 **`:zero_copy` specifics:**
 - Returns BEAM sub-binary references instead of copying data
@@ -381,19 +385,22 @@ RustyCSV is built with a modular Rust architecture:
 
 ```
 native/rustycsv/src/
-├── lib.rs              # NIF entry points, separator/escape decoding, dispatch
+├── lib.rs                 # NIF entry points, separator/escape decoding, dispatch
 ├── core/
-│   ├── scanner.rs      # SIMD row/field scanning (memchr, memchr3)
-│   └── field.rs        # Zero-copy field extraction (Cow)
+│   ├── simd_scanner.rs    # Single-pass SIMD structural scanner (prefix-XOR quote detection)
+│   ├── simd_index.rs      # StructuralIndex, RowIter, RowFieldIter, FieldIter
+│   ├── scanner.rs         # Byte-level helpers (separator matching)
+│   ├── field.rs           # Field extraction, quote handling (Cow)
+│   └── newlines.rs        # Custom newline support
 ├── strategy/
-│   ├── direct.rs       # Basic + SIMD strategies (single-byte)
-│   ├── two_phase.rs    # Indexed strategy (single-byte)
-│   ├── streaming.rs    # Stateful streaming parser (single-byte)
-│   ├── parallel.rs     # Rayon-based parallel parsing (single-byte)
-│   ├── zero_copy.rs    # Sub-binary reference parsing (single-byte)
-│   └── general.rs      # Multi-byte separator/escape (all strategies)
-├── term.rs             # BEAM term building (copy + sub-binary)
-└── resource.rs         # ResourceArc for streaming state
+│   ├── direct.rs          # Basic + SIMD strategies (single-byte)
+│   ├── two_phase.rs       # Indexed strategy (single-byte)
+│   ├── streaming.rs       # Stateful streaming parser (single-byte)
+│   ├── parallel.rs        # Rayon-based parallel parsing (single-byte)
+│   ├── zero_copy.rs       # Sub-binary reference parsing (single-byte)
+│   └── general.rs         # Multi-byte separator/escape (all strategies)
+├── term.rs                # BEAM term building (copy + sub-binary)
+└── resource.rs            # ResourceArc for streaming state
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed implementation notes.
@@ -470,6 +477,17 @@ IO.puts("Peak Rust memory: #{peak / 1_000_000} MB")
 
 When disabled (default), these functions return `0` with zero overhead.
 
+## SIMD and Rust Nightly
+
+RustyCSV uses Rust's [`std::simd`](https://doc.rust-lang.org/std/simd/index.html) portable SIMD, which currently requires nightly via `#![feature(portable_simd)]`. However, RustyCSV only uses the stabilization-safe subset of the API:
+
+- `Simd::from_slice`, `splat`, `simd_eq`, bitwise ops (`&`, `|`, `!`)
+- `Mask::to_bitmask()` for extracting bit positions
+
+We deliberately avoid the APIs that are [blocking stabilization](https://github.com/rust-lang/portable-simd/issues/364): swizzle, scatter/gather, and lane-count generics (`LaneCount<N>: SupportedLaneCount`). The items blocking the `portable_simd` [tracking issue](https://github.com/rust-lang/rust/issues/86656) — mask semantics, supported vector size limits, and swizzle design — are unrelated to the operations we use. When `std::simd` stabilizes, RustyCSV will work on stable Rust with no code changes.
+
+Architecture-specific intrinsics (CLMUL on x86_64, PMULL on aarch64) are used only for the prefix-XOR fast path and are accessed via `core::arch`, which is already stable.
+
 ## Development
 
 ```bash
@@ -479,7 +497,7 @@ mix deps.get
 # Compile (includes Rust NIF)
 mix compile
 
-# Run tests (348 tests)
+# Run tests (367 tests)
 mix test
 
 # Run benchmarks

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-02-01
+
+Major internal refactor replacing all per-strategy byte-by-byte parsers with a shared single-pass SIMD structural scanner. No user-facing API changes.
+
+### Changed
+
+- **SIMD structural scanner** — all six parsing strategies now share a single `scan_structural` pass that finds every unquoted separator and row ending in one sweep. Uses `std::simd` portable SIMD (128-bit, 256-bit on AVX2) with architecture-specific fast paths (CLMUL on x86_64, PMULL on aarch64). Requires Rust nightly (`#![feature(portable_simd)]`), but only uses the [stabilization-safe API subset](https://github.com/rust-lang/portable-simd/issues/364) — no swizzle, scatter/gather, or lane-count generics.
+- **`:parallel` strategy overhauled** — phase 1 now uses the shared SIMD scan instead of a separate sequential row-boundary pass
+
+### Performance
+
+- `:zero_copy` — up to 15% faster on small payloads, up to 31% on large
+- `:simd` / `:basic` — 25-35% faster across mixed and large workloads
+- `:parallel` — 2.4-3.7x faster, now competitive at all file sizes (previously only beneficial at 500MB+)
+- Streaming — 2.2x faster than NimbleCSV (was roughly even)
+- vs NimbleCSV: 3.7x (simple) to 17.9x (quoted) to 12.5x (108MB)
+
 ## [0.3.3] - 2026-01-29
 
 Internal safety hardening and scheduler improvements. No new user-facing features — all changes are on by default with zero configuration required.

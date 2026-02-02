@@ -1,3 +1,4 @@
+#![feature(portable_simd)]
 // RustyCSV - Fast CSV parsing with multiple strategies
 //
 // NIF safety: no unwrap/expect in production code. Fallible paths use match + early return.
@@ -5,7 +6,7 @@
 //
 // Strategies:
 // A: Basic byte-by-byte parsing (parse_string)
-// B: SIMD-accelerated via memchr (parse_string_fast)
+// B: SIMD structural scanner (parse_string_fast)
 // C: Two-phase index-then-extract (parse_string_indexed)
 // D: Streaming chunked parser (streaming_*)
 // E: Parallel parsing via rayon (parse_string_parallel)
@@ -23,9 +24,9 @@ mod atoms {
     }
 }
 
-mod core;
+pub mod core;
 mod resource;
-mod strategy;
+pub mod strategy;
 mod term;
 
 /// Separators: list of patterns. Each pattern can be multi-byte.
@@ -307,7 +308,7 @@ fn parse_string_with_config<'a>(
 // Strategy B: SIMD-Accelerated Parser
 // ============================================================================
 
-/// Parse using memchr for SIMD-accelerated delimiter scanning
+/// Parse using SIMD structural scanner for delimiter detection
 #[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_fast<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
     let bytes = input.as_slice();

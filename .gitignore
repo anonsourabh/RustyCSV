@@ -42,7 +42,6 @@ Thumbs.db
 /bench/results/
 
 # Sandbox (exploratory scripts and their build artifacts)
-/sandbox/_build/
-/sandbox/deps/
-/sandbox/native/*/target/
-/sandbox/priv/
+/sandbox/
+
+/.claude/

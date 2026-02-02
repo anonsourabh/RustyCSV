@@ -20,12 +20,12 @@ RustyCSV offers unmatched flexibility with six parsing strategies:
 
 | Strategy | Innovation |
 |----------|------------|
-| `:simd` | Hardware-accelerated delimiter scanning via `memchr` crate |
-| `:parallel` | Multi-threaded row parsing via `rayon`, runs on dirty schedulers |
+| `:simd` | Shared SIMD structural scan + `Cow`-based field extraction (default) |
+| `:parallel` | Shared SIMD scan + multi-threaded field extraction via `rayon` |
 | `:streaming` | Stateful parser with bounded memory, handles multi-GB files |
-| `:indexed` | Two-phase approach enables row range extraction without full parse |
-| `:zero_copy` | Sub-binary references for maximum speed (like NimbleCSV's memory model) |
-| `:basic` | Reference implementation for correctness validation |
+| `:indexed` | Shared SIMD scan + two-phase index-then-extract for row range access |
+| `:zero_copy` | Shared SIMD scan + sub-binary references for maximum speed |
+| `:basic` | Shared SIMD scan + basic field extraction (debugging, baseline) |
 
 ### Memory Efficiency
 
@@ -36,7 +36,7 @@ RustyCSV offers unmatched flexibility with six parsing strategies:
 
 ### Validated Correctness
 
-- **348 tests** covering RFC 4180, industry test suites, edge cases, encodings, multi-byte separators/escapes, and headers-to-maps
+- **367 tests** covering RFC 4180, industry test suites, edge cases, encodings, multi-byte separators/escapes, and headers-to-maps
 - **Cross-strategy validation** - All 6 strategies produce identical output
 - **NimbleCSV compatibility** - Verified identical behavior for all API functions
 
@@ -134,13 +134,15 @@ CSV.parse_string(data, headers: [:name, :age])
 
 RustyCSV implements six parsing strategies, each optimized for different use cases:
 
+All five batch strategies (`:simd`, `:basic`, `:indexed`, `:parallel`, `:zero_copy`) share a single-pass SIMD structural scanner (`scan_structural`) that finds every unquoted separator and row ending in one sweep, producing a `StructuralIndex`. The strategies differ only in how they extract field data from the index.
+
 | Strategy | Description | Best For |
 |----------|-------------|----------|
-| `:simd` | SIMD-accelerated via memchr (default) | Most files - fastest general purpose |
-| `:basic` | Simple byte-by-byte parsing | Debugging, baseline comparison |
-| `:indexed` | Two-phase index-then-extract | When you need to re-extract rows |
-| `:parallel` | Multi-threaded via rayon | Very large files (500MB+) with complex quoting |
-| `:zero_copy` | Sub-binary references | Maximum speed, controlled memory lifetime |
+| `:simd` | SIMD scan + `Cow`-based field extraction (default) | Most files - fastest general purpose |
+| `:basic` | SIMD scan + basic field extraction | Debugging, baseline comparison |
+| `:indexed` | SIMD scan + two-phase index-then-extract | When you need to re-extract rows |
+| `:parallel` | SIMD scan + rayon parallel field extraction | Large files with many cores |
+| `:zero_copy` | SIMD scan + sub-binary references | Maximum speed, controlled memory lifetime |
 | `:streaming` | Stateful chunked parser | Unbounded files, bounded memory |
 
 ### Strategy Selection Guide
@@ -150,7 +152,7 @@ File Size        Recommended Strategy
 ─────────────────────────────────────────────────────────────
 < 1 MB           :simd (default) or :zero_copy
 1-500 MB         :simd or :zero_copy
-500 MB+          :parallel (with complex quoted data) or :zero_copy
+Large files      :parallel or :zero_copy
 Unbounded        streaming (parse_stream)
 Memory-sensitive :simd (copies data, frees input immediately)
 Speed-sensitive  :zero_copy (sub-binaries, keeps input alive)
@@ -171,15 +173,18 @@ native/rustycsv/src/
 ├── lib.rs                 # NIF entry points, separator/escape decoding, dispatch
 ├── core/
 │   ├── mod.rs            # Re-exports
-│   ├── scanner.rs        # SIMD row/field boundary detection (memchr3)
-│   └── field.rs          # Field extraction, quote handling
+│   ├── simd_scanner.rs   # Single-pass SIMD structural scanner (prefix-XOR quote detection)
+│   ├── simd_index.rs     # StructuralIndex, RowIter, RowFieldIter, FieldIter
+│   ├── scanner.rs        # Byte-level helpers (separator matching)
+│   ├── field.rs          # Field extraction, quote handling
+│   └── newlines.rs       # Custom newline support
 ├── strategy/
 │   ├── mod.rs            # Strategy exports
-│   ├── direct.rs         # A/B: Basic and SIMD strategies (single-byte fast path)
-│   ├── two_phase.rs      # C: Index-then-extract (single-byte fast path)
+│   ├── direct.rs         # A/B: Basic and SIMD strategies (consume StructuralIndex)
+│   ├── two_phase.rs      # C: Index-then-extract (StructuralIndex → CsvIndex bridge)
 │   ├── streaming.rs      # D: Stateful chunked parser (single-byte fast path)
-│   ├── parallel.rs       # E: Rayon-based parallel (single-byte fast path)
-│   ├── zero_copy.rs      # F: Sub-binary boundary parsing (single-byte fast path)
+│   ├── parallel.rs       # E: Rayon-based parallel (StructuralIndex for row ranges)
+│   ├── zero_copy.rs      # F: Sub-binary boundary parsing (consume StructuralIndex)
 │   └── general.rs        # Multi-byte separator/escape support (all strategies)
 ├── term.rs               # Term building (lists + maps, copy + sub-binary, multi-byte escape)
 └── resource.rs           # ResourceArc for streaming parser (single-byte + general)
@@ -193,39 +198,33 @@ lib/
 
 ## Implementation Details
 
-### SIMD-Accelerated Row Scanning
+### SIMD Structural Scanner
 
-Row boundary detection uses `memchr3` for hardware-accelerated scanning:
+All batch strategies share a single-pass SIMD structural scanner (`scan_structural` in `simd_scanner.rs`) inspired by simdjson's approach. It processes the entire input once and produces a `StructuralIndex` containing the positions of all unquoted separators and row endings.
+
+**How it works:**
+
+1. Load 16-byte chunks (or 32-byte on AVX2) into SIMD registers
+2. Compare against separator, quote, `\n`, and `\r` characters simultaneously
+3. Use **prefix-XOR** on the quote bitmask to determine which positions are inside quoted regions — a cumulative XOR where bit *i* is set if there's an odd number of quotes before position *i*
+4. Mask out quoted positions, then extract the remaining separator and newline positions into `Vec<u32>` arrays
+5. A `quote_carry` bit tracks quote parity across chunk boundaries
+
+The prefix-XOR uses carryless multiply intrinsics where available (CLMUL on x86_64, PMULL on aarch64) with a portable shift-and-xor fallback.
+
+**`std::simd` API surface:** The scanner uses only the stabilization-safe subset of `portable_simd`: `Simd::from_slice`, `splat`, `simd_eq`, `to_bitmask`, and bitwise ops. It avoids the APIs [blocking stabilization](https://github.com/rust-lang/portable-simd/issues/364) (swizzle, scatter/gather, lane-count generics). The architecture-specific intrinsics (CLMUL, PMULL) are accessed via `core::arch`, which is already stable.
+
+**Output — `StructuralIndex`:**
 
 ```rust
-// Outside quotes: SIMD jump to next interesting byte
-match memchr3(escape, b'\n', b'\r', &input[pos..]) {
-    Some(offset) => {
-        let found = pos + offset;
-        match input[found] {
-            b if b == escape => { in_quotes = true; pos = found + 1; }
-            b'\n' => { starts.push(pos + 1); pos = found + 1; }
-            b'\r' => { /* handle CRLF */ }
-        }
-    }
-    None => break,
-}
-
-// Inside quotes: SIMD jump to next escape char only
-match memchr(escape, &input[pos..]) {
-    Some(offset) => {
-        // Handle escaped quote "" (RFC 4180)
-        if input[found + 1] == escape {
-            pos = found + 2; // Skip both, stay in quotes
-        } else {
-            in_quotes = false;
-        }
-    }
-    None => break,
+pub struct StructuralIndex {
+    pub field_seps: Vec<u32>,   // positions of unquoted separators
+    pub row_ends: Vec<RowEnd>,  // positions of unquoted row terminators
+    pub input_len: u32,
 }
 ```
 
-This approach skips over non-interesting bytes using SIMD, only examining positions where quotes or newlines appear.
+Positions use `u32` (4 GB cap) to halve memory vs `usize` on 64-bit. Strategies consume the index via `rows_with_fields()`, a cursor-based iterator that yields `(row_start, row_content_end, FieldIter)` tuples by advancing a linear cursor through `field_seps` — O(total_seps) across all rows instead of O(rows × log(seps)) with binary search.
 
 ### Quote Handling with Cow
 
@@ -246,14 +245,15 @@ pub fn extract_field_cow(input: &[u8], start: usize, end: usize) -> Cow<'_, [u8]
 
 ### Strategy A/B: Direct Parsing
 
-Both basic and SIMD strategies use the same quote-aware row parser with `Cow`-based field extraction. The SIMD version uses `memchr` for faster delimiter scanning.
+Both basic and SIMD strategies call `scan_structural` to build a `StructuralIndex`, then iterate rows via `rows_with_fields()` extracting fields with `extract_field_cow_with_escape`. The two strategies are now functionally identical (both use the SIMD scanner); `:basic` is retained as a named alias for debugging.
 
 ### Strategy C: Two-Phase Index-then-Extract
 
-1. **Phase 1**: Build index of row/field boundaries (fast scan)
-2. **Phase 2**: Extract fields using the index with `Cow`-based unescaping
+1. **Phase 1**: `scan_structural` → `StructuralIndex` (shared SIMD scan)
+2. **Bridge**: `structural_to_csv_index` converts to the legacy `CsvIndex` (row bounds + field bounds)
+3. **Phase 2**: Extract fields using the index with `Cow`-based unescaping
 
-Benefits: Better cache utilization, can skip rows, predictable memory.
+Benefits: Better cache utilization, can skip rows via `extract_rows` range queries, predictable memory.
 
 ### Strategy D: Streaming Parser
 
@@ -285,12 +285,21 @@ Key features:
 Uses rayon for multi-threaded row parsing on a **dedicated thread pool** (`rustycsv-*`
 threads, capped at 8) to avoid contention with other Rayon users in the same VM:
 
-1. **Single-threaded**: Find all row boundaries (SIMD-accelerated, quote-aware)
-2. **Parallel**: Parse each row independently on the dedicated pool
+1. **Single-threaded**: `scan_structural` → `StructuralIndex` (row boundaries + field separator positions)
+2. **O(n) cursor walk**: Collect `(row_start, content_end, sep_lo, sep_hi)` into a flat `Vec`, mapping each row to its slice of `field_seps`
+3. **Parallel**: Each worker indexes directly into the shared `&[u32]` field_seps slice — no re-scanning, no per-row allocation
 
 Uses `DirtyCpu` scheduler to avoid blocking normal BEAM schedulers.
 
-**Note**: Parallel mode involves a double-copy (Rust Vec → BEAM binary) because BEAM terms cannot be constructed on worker threads. This overhead is offset by CPU savings on large files with complex quoted fields.
+**Evolution of field-position reuse from the structural index:**
+
+The SIMD structural scanner already finds every separator position. Three approaches were benchmarked for reusing those positions instead of re-scanning with memchr:
+
+- **Approach A** — Pre-collect `Vec<Vec<(u32, u32)>>` field bounds: 10K+ inner Vec allocations cost more than the memchr scan (-18% on simple CSV).
+- **Approach B** — Binary search via `fields_in_row()`: Two `partition_point` calls per row add O(log n) overhead (-11% on simple CSV).
+- **Approach C** (current) — Flat index + direct slice: O(n) cursor walk builds a single flat Vec mapping each row to its slice of `field_seps`. Each worker indexes into the shared `&[u32]` with O(1) lookup. This avoids A's allocation overhead and B's binary search overhead, improving performance +1-12% vs the memchr baseline depending on workload.
+
+**Note**: Parallel mode involves a double-copy (Rust Vec → BEAM binary) because BEAM terms cannot be constructed on worker threads. The SIMD structural scan makes phase 1 fast enough that `:parallel` is now competitive at all file sizes, not just 500MB+.
 
 ### Strategy F: Zero-Copy Parser
 
@@ -392,17 +401,14 @@ When disabled (default), they return `0` with zero overhead.
 
 ### Pre-allocated Vectors
 
-All parsing paths pre-allocate vectors with capacity estimates:
+The structural scanner pre-allocates vectors with capacity estimates based on input size:
 
 ```rust
-// Row starts: ~50 bytes per row estimate
-let mut starts = Vec::with_capacity(input.len() / 50 + 1);
-
-// Fields per row: ~8 fields estimate
-let mut fields = Vec::with_capacity(8);
+let est_seps = input.len() / 10 + 16;  // ~1 separator per 10 bytes
+let est_rows = input.len() / 50 + 4;   // ~1 row per 50 bytes
 ```
 
-This reduces reallocation overhead during parsing.
+This reduces reallocation overhead during the scan pass.
 
 ---
 
@@ -420,7 +426,7 @@ NimbleCSV is remarkably fast for pure Elixir:
 1. **Multiple strategies** - Choose the right tool for each workload
 2. **Streaming support** - Process arbitrarily large files with bounded memory
 3. **Reduced scheduler load** - Offload parsing to native code
-4. **Competitive speed** - 3.5x-9x faster on typical workloads, up to 18x on quoted data
+4. **Competitive speed** - 3.7x-12.5x faster on typical workloads, up to 18x on quoted data
 5. **Flexible memory model** - Copy or sub-binary, your choice
 6. **NIF safety** - Dirty schedulers for long operations
 
@@ -454,9 +460,9 @@ remain on the normal scheduler.
 
 ## Benchmark Results
 
-- **Synthetic benchmarks**: 3.5x-9x faster than NimbleCSV for typical data, up to 18x for heavily quoted CSVs
+- **Synthetic benchmarks**: 3.7x-12.5x faster than NimbleCSV for typical data, up to 18x for heavily quoted CSVs
 - **Real-world TSV**: 13-28% faster than NimbleCSV (10K+ rows)
-- **Streaming**: Comparable speed to NimbleCSV for line-based streams; RustyCSV uniquely handles binary chunks
+- **Streaming**: 2.2x faster than NimbleCSV for line-based streams; RustyCSV uniquely handles binary chunks
 
 The speedup varies by data complexity—quoted fields with escapes show the largest gains.
 
@@ -494,6 +500,7 @@ See [COMPLIANCE.md](COMPLIANCE.md) for full details on test suites and validatio
 - [csv-test-data](https://github.com/sineemore/csv-test-data) - RFC 4180 test data
 - [NimbleCSV Source](https://github.com/dashbitco/nimble_csv)
 - [BEAM Binary Handling](https://www.erlang.org/doc/efficiency_guide/binaryhandling.html)
-- [memchr crate](https://docs.rs/memchr/latest/memchr/) - SIMD byte searching
+- [simdjson](https://github.com/simdjson/simdjson) - Inspiration for structural index and prefix-XOR quote detection
+- [std::simd](https://doc.rust-lang.org/std/simd/index.html) - Portable SIMD (used in structural scanner)
 - [rayon crate](https://docs.rs/rayon/latest/rayon/) - Parallel iteration
 - [mimalloc](https://github.com/microsoft/mimalloc) - High-performance allocator

@@ -72,6 +72,35 @@ defmodule RustyCSV.Native do
 
   version = Mix.Project.config()[:version]
 
+  avx2_detect = fn _config ->
+    try do
+      cond do
+        File.exists?("/proc/cpuinfo") ->
+          case File.read("/proc/cpuinfo") do
+            {:ok, info} -> String.contains?(info, "avx2")
+            _ -> false
+          end
+
+        match?({:win32, _}, :os.type()) ->
+          # On Windows, assume AVX2 for x86_64 — practically all x86_64 Windows
+          # machines in 2024+ have Haswell or newer. Worst case: falls back to
+          # baseline binary if the variant download fails.
+          true
+
+        true ->
+          # macOS x86_64: check via sysctl
+          case System.cmd("sysctl", ["-n", "hw.optional.avx2_0"], stderr_to_stdout: true) do
+            {"1\n", 0} -> true
+            _ -> false
+          end
+      end
+    rescue
+      _ -> false
+    end
+  end
+
+  x86_64_variants = [avx2: avx2_detect]
+
   use RustlerPrecompiled,
     otp_app: :rusty_csv,
     crate: "rustycsv",
@@ -83,6 +112,13 @@ defmodule RustyCSV.Native do
         ["aarch64-apple-darwin", "x86_64-apple-darwin"] ++
           RustlerPrecompiled.Config.default_targets()
       ),
+    variants: %{
+      "x86_64-unknown-linux-gnu" => x86_64_variants,
+      "x86_64-apple-darwin" => x86_64_variants,
+      "x86_64-pc-windows-msvc" => x86_64_variants,
+      "x86_64-pc-windows-gnu" => x86_64_variants,
+      "x86_64-unknown-linux-musl" => x86_64_variants
+    },
     version: version
 
   # ==========================================================================

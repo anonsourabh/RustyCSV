@@ -53,10 +53,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_newlines() {
+    fn test_default_newlines_match_real_input() {
         let nl = Newlines::default_newlines();
         assert!(nl.is_default);
-        assert_eq!(nl.patterns.len(), 2);
+        // Must match both \r\n and \n in actual input
+        assert_eq!(match_newline(b"abc\r\ndef", 3, &nl), 2);
+        assert_eq!(match_newline(b"abc\ndef", 3, &nl), 1);
+        // Must NOT match bare \r
+        assert_eq!(match_newline(b"abc\rdef", 3, &nl), 0);
+        // \r\n must be ordered before \n so greedy match returns 2, not 1
+        assert_eq!(nl.patterns[0], b"\r\n".to_vec());
+    }
+
+    #[test]
+    fn test_max_pattern_len_used_for_streaming_safety() {
+        // Streaming uses max_pattern_len to know when it can't fully check
+        // for a newline near the chunk boundary. A wrong value causes silent
+        // data corruption. Verify it tracks the actual longest pattern.
+        let nl = Newlines::custom(vec![b"|".to_vec(), b"<br>".to_vec()]);
+        assert_eq!(nl.max_pattern_len(), 4);
+
+        // Single pattern
+        let nl2 = Newlines::custom(vec![b"||".to_vec()]);
+        assert_eq!(nl2.max_pattern_len(), 2);
+
+        // Default newlines: longest is \r\n (2 bytes)
+        let nl3 = Newlines::default_newlines();
+        assert_eq!(nl3.max_pattern_len(), 2);
+
+        // Empty patterns list (should not happen in practice, but must not panic)
+        let nl4 = Newlines { patterns: vec![], is_default: false };
+        assert_eq!(nl4.max_pattern_len(), 1); // unwrap_or(1) fallback
     }
 
     #[test]
@@ -92,9 +119,4 @@ mod tests {
         assert_eq!(match_newline(input, 1, &nl), 2); // "||" matches (longest first)
     }
 
-    #[test]
-    fn test_max_pattern_len() {
-        let nl = Newlines::custom(vec![b"|".to_vec(), b"<br>".to_vec()]);
-        assert_eq!(nl.max_pattern_len(), 4);
-    }
 }

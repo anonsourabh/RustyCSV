@@ -16,7 +16,7 @@ pub enum StreamingParserEnum {
 }
 
 impl StreamingParserEnum {
-    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), ()> {
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), crate::strategy::streaming::BufferOverflow> {
         match self {
             StreamingParserEnum::SingleByte(p) => p.feed(chunk),
             StreamingParserEnum::General(p) => p.feed(chunk),

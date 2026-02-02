@@ -7,77 +7,77 @@ This document presents benchmark results comparing RustyCSV's parsing strategies
 - **Elixir**: 1.19.4
 - **OTP**: 28
 - **Hardware**: Apple Silicon M1 Pro (10 cores)
-- **RustyCSV**: 0.2.0
+- **RustyCSV**: 0.3.4
 - **NimbleCSV**: 1.3.0
-- **Test date**: January 25, 2026
+- **Test date**: February 1, 2026
 
 ## Strategies Compared
 
 | Strategy | Description | Best For |
 |----------|-------------|----------|
-| `:simd` | SIMD-accelerated via memchr (default) | General use |
-| `:basic` | Byte-by-byte parsing | Debugging, baseline |
-| `:indexed` | Two-phase index-then-extract | Row range extraction |
-| `:parallel` | Multi-threaded via rayon | Very large files (500MB+) |
-| `:zero_copy` | Sub-binary references | Maximum speed |
+| `:simd` | SIMD structural scanner (default) | General use |
+| `:basic` | SIMD scan + basic field extraction | Debugging, baseline |
+| `:indexed` | SIMD scan + two-phase index-then-extract | Row range extraction |
+| `:parallel` | SIMD scan + flat index + parallel field extraction via rayon | Large files |
+| `:zero_copy` | SIMD scan + sub-binary references | Maximum speed |
 | `:streaming` | Bounded-memory chunks | Unbounded files |
+
+All batch strategies share a single-pass SIMD structural scanner that finds every unquoted separator and row ending, then diverge only in how they extract field data.
 
 ## Throughput Benchmark Results
 
-### Simple CSV (333 KB, 10K rows, no quotes)
+### Simple CSV (334 KB, 10K rows, no quotes)
 
 | Strategy | Throughput | Latency | vs NimbleCSV |
 |----------|------------|---------|--------------|
-| RustyCSV (zero_copy) | 719 ips | 1.39ms | **3.5x faster** |
-| RustyCSV (simd) | 597 ips | 1.68ms | 2.9x faster |
-| RustyCSV (basic) | 596 ips | 1.68ms | 2.9x faster |
-| RustyCSV (indexed) | 562 ips | 1.78ms | 2.7x faster |
-| NimbleCSV | 209 ips | 4.80ms | baseline |
-| RustyCSV (parallel) | 149 ips | 6.73ms | 0.71x (overhead) |
+| RustyCSV (zero_copy) | 829 ips | 1.02ms | **3.7x faster** |
+| RustyCSV (basic) | 758 ips | 1.13ms | 3.3x faster |
+| RustyCSV (simd) | 744 ips | 1.14ms | 3.3x faster |
+| RustyCSV (indexed) | 688 ips | 1.26ms | 3.0x faster |
+| RustyCSV (parallel) | 567 ips | 1.58ms | 2.5x faster |
+| NimbleCSV | 227 ips | 4.32ms | baseline |
 
 ### Quoted CSV (947 KB, 10K rows, all fields quoted with escapes)
 
 | Strategy | Throughput | Latency | vs NimbleCSV |
 |----------|------------|---------|--------------|
-| RustyCSV (simd) | 375 ips | 2.66ms | **17.9x faster** |
-| RustyCSV (zero_copy) | 370 ips | 2.70ms | 17.6x faster |
-| RustyCSV (basic) | 349 ips | 2.87ms | 16.6x faster |
-| RustyCSV (indexed) | 325 ips | 3.07ms | 15.5x faster |
-| RustyCSV (parallel) | 119 ips | 8.40ms | 5.7x faster |
-| NimbleCSV | 21 ips | 47.65ms | baseline |
+| RustyCSV (zero_copy) | 444 ips | 2.04ms | **17.9x faster** |
+| RustyCSV (basic) | 418 ips | 2.18ms | 16.9x faster |
+| RustyCSV (simd) | 418 ips | 2.19ms | 16.8x faster |
+| RustyCSV (parallel) | 400 ips | 2.33ms | 16.1x faster |
+| RustyCSV (indexed) | 390 ips | 2.35ms | 15.7x faster |
+| NimbleCSV | 25 ips | 40.20ms | baseline |
 
 ### Mixed/Realistic CSV (652 KB, 10K rows)
 
 | Strategy | Throughput | Latency | vs NimbleCSV |
 |----------|------------|---------|--------------|
-| RustyCSV (zero_copy) | 424 ips | 2.36ms | **4.3x faster** |
-| RustyCSV (basic) | 372 ips | 2.69ms | 3.8x faster |
-| RustyCSV (simd) | 372 ips | 2.69ms | 3.8x faster |
-| RustyCSV (indexed) | 354 ips | 2.83ms | 3.6x faster |
-| RustyCSV (parallel) | 119 ips | 8.38ms | 1.2x faster |
-| NimbleCSV | 99 ips | 10.13ms | baseline |
+| RustyCSV (zero_copy) | 564 ips | 1.53ms | **5.8x faster** |
+| RustyCSV (simd) | 504 ips | 1.71ms | 5.2x faster |
+| RustyCSV (basic) | 473 ips | 1.85ms | 4.9x faster |
+| RustyCSV (indexed) | 437 ips | 2.03ms | 4.5x faster |
+| RustyCSV (parallel) | 362 ips | 2.52ms | 3.7x faster |
+| NimbleCSV | 98 ips | 10.14ms | baseline |
 
 ### Large CSV (6.82 MB, 100K rows)
 
 | Strategy | Throughput | Latency | vs NimbleCSV |
 |----------|------------|---------|--------------|
-| RustyCSV (zero_copy) | 41.9 ips | 23.85ms | **9.2x faster** |
-| RustyCSV (basic) | 35.1 ips | 28.50ms | 7.7x faster |
-| RustyCSV (simd) | 34.9 ips | 28.68ms | 7.6x faster |
-| RustyCSV (indexed) | 33.9 ips | 29.46ms | 7.4x faster |
-| RustyCSV (parallel) | 13.5 ips | 74.28ms | 2.9x faster |
-| NimbleCSV | 4.6 ips | 219.13ms | baseline |
+| RustyCSV (zero_copy) | 49.5 ips | 17.37ms | **10.7x faster** |
+| RustyCSV (basic) | 45.0 ips | 18.58ms | 9.7x faster |
+| RustyCSV (simd) | 45.0 ips | 18.65ms | 9.6x faster |
+| RustyCSV (indexed) | 40.8 ips | 20.21ms | 8.8x faster |
+| RustyCSV (parallel) | 40.6 ips | 20.46ms | 8.7x faster |
+| NimbleCSV | 4.6 ips | 211ms | baseline |
 
 ### Very Large CSV (108 MB, 1.5M rows)
 
 | Strategy | Throughput | Latency | vs NimbleCSV |
 |----------|------------|---------|--------------|
-| RustyCSV (zero_copy) | 1.93 ips | 0.52s | **8.6x faster** |
-| RustyCSV (simd) | 1.75 ips | 0.57s | 7.8x faster |
-| RustyCSV (parallel) | 0.80 ips | 1.25s | 3.6x faster |
-| NimbleCSV | 0.23 ips | 4.44s | baseline |
-
-**Note:** Even at 108 MB, `:parallel` is slower than single-threaded strategies due to coordination overhead. The crossover point where `:parallel` becomes beneficial appears to be 500MB+ with highly complex (quoted) data.
+| RustyCSV (zero_copy) | 2.53 ips | 0.29s | **12.5x faster** |
+| RustyCSV (simd) | 2.28 ips | 0.30s | 11.2x faster |
+| RustyCSV (parallel) | 1.99 ips | 0.49s | 9.7x faster |
+| NimbleCSV | 0.20 ips | 4.93s | baseline |
 
 ## Memory Comparison
 
@@ -92,20 +92,12 @@ We measure three metrics:
 
 ### Mixed CSV (652 KB input)
 
-| Strategy | Rust NIF Peak | Notes |
-|----------|---------------|-------|
-| RustyCSV (zero_copy) | 1.67 MB | Lowest - sub-binary refs avoid copies |
-| RustyCSV (basic) | 2.44 MB | Copies all field data |
-| RustyCSV (simd) | 2.44 MB | Same as basic |
-| RustyCSV (parallel) | 3.40 MB | Extra buffers for coordination |
-| RustyCSV (indexed) | 3.74 MB | Index structure + field data |
-
 | Parser | BEAM Allocation (Benchee) |
 |--------|---------------------------|
 | RustyCSV (all strategies) | 1.55 KB |
-| NimbleCSV | 9.41 MB |
+| NimbleCSV | 9.40 MB |
 
-**Key insight:** Benchee's "1.55 KB" for RustyCSV measures process heap delta only, not the actual data. The parsed data exists in BEAM binaries (created by the NIF). NimbleCSV's 9.41 MB includes all list/tuple allocations.
+**Key insight:** Benchee's "1.55 KB" for RustyCSV measures process heap delta only, not the actual data. The parsed data exists in BEAM binaries (created by the NIF). NimbleCSV's 9.40 MB includes all list/tuple allocations.
 
 **Bottom line:** Both parsers use memory proportional to the data. RustyCSV's memory is split between Rust and BEAM; NimbleCSV's is entirely on BEAM. Neither is dramatically more efficient.
 
@@ -113,12 +105,12 @@ We measure three metrics:
 
 | Strategy | Reductions | vs NimbleCSV |
 |----------|------------|--------------|
-| RustyCSV (zero_copy) | 18 | 14,228x fewer |
-| RustyCSV (indexed) | 18 | 14,228x fewer |
-| RustyCSV (basic) | 2,800 | 91x fewer |
-| RustyCSV (simd) | 3,400 | 75x fewer |
-| RustyCSV (parallel) | 35,500 | 7x fewer |
-| NimbleCSV | 256,100 | baseline |
+| RustyCSV (zero_copy) | 7,100 | 36x fewer |
+| RustyCSV (indexed) | 7,700 | 33x fewer |
+| RustyCSV (basic) | 11,500 | 22x fewer |
+| RustyCSV (simd) | 11,100 | 23x fewer |
+| RustyCSV (parallel) | 16,200 | 16x fewer |
+| NimbleCSV | 254,800 | baseline |
 
 **What this means:**
 - Low reductions = less scheduler overhead
@@ -127,16 +119,17 @@ We measure three metrics:
 
 ## Streaming Comparison
 
-**File:** 6.5 MB (100K rows)
+**File:** 6.8 MB (100K rows)
 
 ### `File.stream!` Input (`parse_stream/2`)
 
-|                       | p10     | median  | p90     | min     | max     |
-|-----------------------|---------|---------|---------|---------|---------|
-| RustyCSV streaming    | 46.8ms  | 47.7ms  | 48.9ms  | 46.6ms  | 49.0ms  |
-| NimbleCSV streaming   | 69.3ms  | 69.9ms  | 70.5ms  | 68.3ms  | 71.0ms  |
+| Parser | Mode | Time | Speedup |
+|--------|------|------|---------|
+| RustyCSV | line-based | 54ms | **2.2x faster** |
+| NimbleCSV | line-based | 117ms | baseline |
+| RustyCSV | 64KB binary chunks | 244ms | unique capability |
 
-**Result:** RustyCSV is **1.5x faster** (22ms saved at median).
+**Result:** RustyCSV is **2.2x faster** for line-based streaming.
 
 RustyCSV automatically detects `File.Stream` in line mode and switches to 64KB binary chunk reads, reducing stream iterations from ~100K (one per line) to ~100. The Rust NIF handles arbitrary chunk boundaries internally, so it can operate on raw binary chunks rather than pre-split lines.
 
@@ -184,12 +177,12 @@ This section presents results from parsing Amazon SP-API settlement reports in T
 
 | File Type | Best Strategy | Speedup vs NimbleCSV |
 |-----------|---------------|----------------------|
-| Simple CSV | `:zero_copy` | 3.5x |
-| Quoted CSV | `:simd` | 17.9x |
-| Mixed CSV | `:zero_copy` | 4.3x |
-| Large CSV (7MB) | `:zero_copy` | 9.2x |
-| Very Large CSV (108MB) | `:zero_copy` | 8.6x |
-| Streaming (6.5MB) | `parse_stream/2` | 1.5x |
+| Simple CSV | `:zero_copy` | 3.7x |
+| Quoted CSV | `:zero_copy` | 17.9x |
+| Mixed CSV | `:zero_copy` | 5.8x |
+| Large CSV (7MB) | `:zero_copy` | 10.7x |
+| Very Large CSV (108MB) | `:zero_copy` | 12.5x |
+| Streaming (6.8MB) | `parse_stream/2` | 2.2x |
 | Real-world TSV | `:simd` | 1.1-1.3x |
 
 ### Strategy Selection Guide
@@ -198,26 +191,26 @@ This section presents results from parsing Amazon SP-API settlement reports in T
 |----------|---------------------|
 | Default / General use | `:simd` |
 | Maximum speed | `:zero_copy` |
-| Very large files (500MB+) with complex quoting | `:parallel` |
+| Large files with many cores | `:parallel` |
 | Streaming / Unbounded | `parse_stream/2` |
 | Memory-constrained | `:simd` (copies data, frees input) |
 | Debugging | `:basic` |
 
 ### Key Findings
 
-1. **`:zero_copy` is fastest** for most workloads (up to 9.2x faster than NimbleCSV)
+1. **`:zero_copy` is fastest** for all workloads (up to 12.5x faster than NimbleCSV on 108MB)
 
-2. **Quoted fields show largest gains** - 17.9x faster due to efficient escape handling
+2. **Quoted fields show largest gains** — 17.9x faster due to SIMD prefix-XOR quote detection handling all escapes in a single pass
 
-3. **Memory usage is comparable** - RustyCSV allocates on Rust side, NimbleCSV on BEAM. Neither is dramatically more efficient.
+3. **`:parallel` is now competitive at all file sizes** — the shared SIMD structural scan eliminated the coordination overhead that previously made it slower than single-threaded strategies on small/medium files
 
-4. **BEAM reductions are minimal** - Up to 14,228x fewer reductions, reducing scheduler load (but NIFs can't be preempted)
+4. **Memory usage is comparable** — RustyCSV allocates on Rust side, NimbleCSV on BEAM. Neither is dramatically more efficient.
 
-5. **`:parallel` has significant overhead** - Not beneficial until 500MB+ files with complex data
+5. **BEAM reductions are minimal** — 16-36x fewer reductions than NimbleCSV, reducing scheduler load (but NIFs can't be preempted)
 
-6. **Streaming is 1.5x faster** - RustyCSV auto-optimizes `File.Stream` to binary chunk mode, reducing iterations from ~100K lines to ~100 chunks. Also supports arbitrary binary chunks for non-file streams.
+6. **Streaming is 2.2x faster** — RustyCSV auto-optimizes `File.Stream` to binary chunk mode. Also supports arbitrary binary chunks for non-file streams.
 
-7. **Real-world vs synthetic** - Synthetic benchmarks show 3-18x gains; real-world TSV shows 13-28% gains due to simpler data patterns.
+7. **Real-world vs synthetic** — Synthetic benchmarks show 3.7-18x gains; real-world TSV shows 13-28% gains due to simpler data patterns.
 
 ## Running the Benchmarks
 

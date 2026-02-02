@@ -4,86 +4,49 @@ use rustler::sys::enif_make_sub_binary;
 use rustler::{Binary, Env, NewBinary, Term};
 use std::borrow::Cow;
 
-/// Convert parsed rows (borrowed slices) to Elixir term (list of lists of binaries)
-#[allow(dead_code)]
-pub fn rows_to_term<'a>(env: Env<'a>, rows: Vec<Vec<&[u8]>>) -> Term<'a> {
-    // Build list in reverse, then reverse at the end (efficient for cons lists)
+/// Convert a list of byte-like fields to an Elixir cons-list of binaries.
+/// Works with any iterator of `AsRef<[u8]>` items (Vec<u8>, Cow<[u8]>, &[u8], etc).
+fn fields_to_term_inner<'a>(
+    env: Env<'a>,
+    fields: impl DoubleEndedIterator<Item = impl AsRef<[u8]>>,
+) -> Term<'a> {
     let mut list = Term::list_new_empty(env);
-
-    for row in rows.into_iter().rev() {
-        let row_term = fields_to_term(env, row);
-        list = list.list_prepend(row_term);
-    }
-
-    list
-}
-
-/// Convert a single row's fields (borrowed) to an Elixir list of binaries
-#[allow(dead_code)]
-pub fn fields_to_term<'a>(env: Env<'a>, fields: Vec<&[u8]>) -> Term<'a> {
-    let mut list = Term::list_new_empty(env);
-
-    for field in fields.into_iter().rev() {
-        let mut binary = NewBinary::new(env, field.len());
-        binary.as_mut_slice().copy_from_slice(field);
-        let binary_term: Term = binary.into();
-        list = list.list_prepend(binary_term);
-    }
-
-    list
-}
-
-/// Convert owned rows to Elixir term (for streaming/parallel parsers)
-pub fn owned_rows_to_term<'a>(env: Env<'a>, rows: Vec<Vec<Vec<u8>>>) -> Term<'a> {
-    let mut list = Term::list_new_empty(env);
-
-    for row in rows.into_iter().rev() {
-        let row_term = owned_fields_to_term(env, row);
-        list = list.list_prepend(row_term);
-    }
-
-    list
-}
-
-/// Convert owned fields to an Elixir list of binaries
-pub fn owned_fields_to_term<'a>(env: Env<'a>, fields: Vec<Vec<u8>>) -> Term<'a> {
-    let mut list = Term::list_new_empty(env);
-
-    for field in fields.into_iter().rev() {
-        let mut binary = NewBinary::new(env, field.len());
-        binary.as_mut_slice().copy_from_slice(&field);
-        let binary_term: Term = binary.into();
-        list = list.list_prepend(binary_term);
-    }
-
-    list
-}
-
-/// Convert Cow-based rows to Elixir term (for strategies that may need to allocate for escaped quotes)
-pub fn cow_rows_to_term<'a>(env: Env<'a>, rows: Vec<Vec<Cow<'_, [u8]>>>) -> Term<'a> {
-    let mut list = Term::list_new_empty(env);
-
-    for row in rows.into_iter().rev() {
-        let row_term = cow_fields_to_term(env, row);
-        list = list.list_prepend(row_term);
-    }
-
-    list
-}
-
-/// Convert Cow-based fields to an Elixir list of binaries
-pub fn cow_fields_to_term<'a>(env: Env<'a>, fields: Vec<Cow<'_, [u8]>>) -> Term<'a> {
-    let mut list = Term::list_new_empty(env);
-
-    for field in fields.into_iter().rev() {
+    for field in fields.rev() {
         let bytes = field.as_ref();
         let mut binary = NewBinary::new(env, bytes.len());
         binary.as_mut_slice().copy_from_slice(bytes);
         let binary_term: Term = binary.into();
         list = list.list_prepend(binary_term);
     }
-
     list
+}
+
+/// Convert owned rows to Elixir term (for streaming/parallel parsers)
+pub fn owned_rows_to_term<'a>(env: Env<'a>, rows: Vec<Vec<Vec<u8>>>) -> Term<'a> {
+    let mut list = Term::list_new_empty(env);
+    for row in rows.into_iter().rev() {
+        list = list.list_prepend(owned_fields_to_term(env, row));
+    }
+    list
+}
+
+/// Convert owned fields to an Elixir list of binaries
+pub fn owned_fields_to_term<'a>(env: Env<'a>, fields: Vec<Vec<u8>>) -> Term<'a> {
+    fields_to_term_inner(env, fields.into_iter())
+}
+
+/// Convert Cow-based rows to Elixir term (for strategies that may need to allocate for escaped quotes)
+pub fn cow_rows_to_term<'a>(env: Env<'a>, rows: Vec<Vec<Cow<'_, [u8]>>>) -> Term<'a> {
+    let mut list = Term::list_new_empty(env);
+    for row in rows.into_iter().rev() {
+        list = list.list_prepend(cow_fields_to_term(env, row));
+    }
+    list
+}
+
+/// Convert Cow-based fields to an Elixir list of binaries
+pub fn cow_fields_to_term<'a>(env: Env<'a>, fields: Vec<Cow<'_, [u8]>>) -> Term<'a> {
+    fields_to_term_inner(env, fields.into_iter())
 }
 
 // ============================================================================
@@ -118,21 +81,7 @@ unsafe fn make_subbinary<'a>(
     Term::new(env, raw_term)
 }
 
-/// Unescape doubled quotes in a field: "" -> "
-pub(crate) fn unescape_field(inner: &[u8], escape: u8) -> Vec<u8> {
-    let mut result = Vec::with_capacity(inner.len());
-    let mut i = 0;
-    while i < inner.len() {
-        if inner[i] == escape && i + 1 < inner.len() && inner[i + 1] == escape {
-            result.push(escape);
-            i += 2;
-        } else {
-            result.push(inner[i]);
-            i += 1;
-        }
-    }
-    result
-}
+pub(crate) use crate::core::unescape_field;
 
 /// Convert a single field to a term, using sub-binary when possible (hybrid Cow approach)
 /// - Unquoted fields: sub-binary (zero-copy)
@@ -309,25 +258,25 @@ fn make_map<'a>(env: Env<'a>, keys: &[Term<'a>], values: &[Term<'a>]) -> Term<'a
     }
 }
 
-/// Convert Cow rows to maps using pre-built key terms.
-/// Takes a slice to avoid skip+collect copies at the call site.
-pub fn cow_rows_to_maps<'a>(
+/// Generic map builder: iterates rows in reverse, converts each field to a Term,
+/// fills missing columns with nil, and builds a cons-list of maps.
+fn rows_to_maps_inner<'a, R>(
     env: Env<'a>,
     keys: &[Term<'a>],
-    rows: &[Vec<Cow<'_, [u8]>>],
+    rows: impl DoubleEndedIterator<Item = R>,
+    field_count: impl Fn(&R) -> usize,
+    field_to_term: impl Fn(Env<'a>, &R, usize) -> Term<'a>,
 ) -> Term<'a> {
     let num_keys = keys.len();
     let nil_term = atom::nil().encode(env);
     let mut value_terms = vec![nil_term; num_keys];
     let mut list = Term::list_new_empty(env);
 
-    for row in rows.iter().rev() {
-        for i in 0..num_keys {
-            value_terms[i] = if i < row.len() {
-                let bytes = row[i].as_ref();
-                let mut binary = NewBinary::new(env, bytes.len());
-                binary.as_mut_slice().copy_from_slice(bytes);
-                binary.into()
+    for row in rows.rev() {
+        let row_len = field_count(&row);
+        for (i, val) in value_terms.iter_mut().enumerate() {
+            *val = if i < row_len {
+                field_to_term(env, &row, i)
             } else {
                 nil_term
             };
@@ -335,33 +284,43 @@ pub fn cow_rows_to_maps<'a>(
         list = list.list_prepend(make_map(env, keys, &value_terms));
     }
     list
+}
+
+/// Helper: convert a byte slice to a BEAM binary term.
+#[inline]
+fn bytes_to_binary_term<'a>(env: Env<'a>, bytes: &[u8]) -> Term<'a> {
+    let mut binary = NewBinary::new(env, bytes.len());
+    binary.as_mut_slice().copy_from_slice(bytes);
+    binary.into()
+}
+
+/// Convert Cow rows to maps using pre-built key terms.
+pub fn cow_rows_to_maps<'a>(
+    env: Env<'a>,
+    keys: &[Term<'a>],
+    rows: &[Vec<Cow<'_, [u8]>>],
+) -> Term<'a> {
+    rows_to_maps_inner(
+        env,
+        keys,
+        rows.iter(),
+        |row| row.len(),
+        |env, row, i| bytes_to_binary_term(env, row[i].as_ref()),
+    )
 }
 
 /// Convert owned rows to maps.
-/// Takes a slice to avoid skip+collect copies at the call site.
 pub fn owned_rows_to_maps<'a>(env: Env<'a>, keys: &[Term<'a>], rows: &[Vec<Vec<u8>>]) -> Term<'a> {
-    let num_keys = keys.len();
-    let nil_term = atom::nil().encode(env);
-    let mut value_terms = vec![nil_term; num_keys];
-    let mut list = Term::list_new_empty(env);
-
-    for row in rows.iter().rev() {
-        for i in 0..num_keys {
-            value_terms[i] = if i < row.len() {
-                let mut binary = NewBinary::new(env, row[i].len());
-                binary.as_mut_slice().copy_from_slice(&row[i]);
-                binary.into()
-            } else {
-                nil_term
-            };
-        }
-        list = list.list_prepend(make_map(env, keys, &value_terms));
-    }
-    list
+    rows_to_maps_inner(
+        env,
+        keys,
+        rows.iter(),
+        |row| row.len(),
+        |env, row, i| bytes_to_binary_term(env, &row[i]),
+    )
 }
 
 /// Convert boundary rows to maps with sub-binary hybrid approach (single-byte escape).
-/// Takes a slice to avoid skip+collect copies at the call site.
 pub fn boundaries_to_maps_hybrid<'a>(
     env: Env<'a>,
     input: Binary<'a>,
@@ -371,27 +330,19 @@ pub fn boundaries_to_maps_hybrid<'a>(
 ) -> Term<'a> {
     let input_bytes = input.as_slice();
     let input_term = input.to_term(env);
-    let num_keys = keys.len();
-    let nil_term = atom::nil().encode(env);
-    let mut value_terms = vec![nil_term; num_keys];
-    let mut list = Term::list_new_empty(env);
-
-    for row in boundaries.iter().rev() {
-        for i in 0..num_keys {
-            value_terms[i] = if i < row.len() {
-                let (start, end) = row[i];
-                field_to_term_hybrid(env, input_bytes, input_term, start, end, escape)
-            } else {
-                nil_term
-            };
-        }
-        list = list.list_prepend(make_map(env, keys, &value_terms));
-    }
-    list
+    rows_to_maps_inner(
+        env,
+        keys,
+        boundaries.iter(),
+        |row| row.len(),
+        |env, row, i| {
+            let (start, end) = row[i];
+            field_to_term_hybrid(env, input_bytes, input_term, start, end, escape)
+        },
+    )
 }
 
 /// Convert boundary rows to maps with multi-byte escape hybrid approach.
-/// Takes a slice to avoid skip+collect copies at the call site.
 pub fn boundaries_to_maps_hybrid_general<'a>(
     env: Env<'a>,
     input: Binary<'a>,
@@ -401,21 +352,14 @@ pub fn boundaries_to_maps_hybrid_general<'a>(
 ) -> Term<'a> {
     let input_bytes = input.as_slice();
     let input_term = input.to_term(env);
-    let num_keys = keys.len();
-    let nil_term = atom::nil().encode(env);
-    let mut value_terms = vec![nil_term; num_keys];
-    let mut list = Term::list_new_empty(env);
-
-    for row in boundaries.iter().rev() {
-        for i in 0..num_keys {
-            value_terms[i] = if i < row.len() {
-                let (start, end) = row[i];
-                field_to_term_hybrid_general(env, input_bytes, input_term, start, end, escape)
-            } else {
-                nil_term
-            };
-        }
-        list = list.list_prepend(make_map(env, keys, &value_terms));
-    }
-    list
+    rows_to_maps_inner(
+        env,
+        keys,
+        boundaries.iter(),
+        |row| row.len(),
+        |env, row, i| {
+            let (start, end) = row[i];
+            field_to_term_hybrid_general(env, input_bytes, input_term, start, end, escape)
+        },
+    )
 }
