@@ -29,11 +29,12 @@ use std::simd::prelude::*;
 use super::simd_index::{RowEnd, StructuralIndex};
 
 /// Baseline SIMD chunk size (128-bit).
-const CHUNK: usize = 16;
+pub const CHUNK: usize = 16;
 
 /// Wide chunk size for AVX2 targets.
 #[cfg(target_feature = "avx2")]
-const WIDE: usize = 32;
+pub const WIDE: usize = 32;
+
 
 // ---------------------------------------------------------------------------
 // Prefix-XOR: compute cumulative XOR to determine quoted regions

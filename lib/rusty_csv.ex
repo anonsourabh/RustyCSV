@@ -1143,19 +1143,17 @@ defmodule RustyCSV do
       ## Options
 
         * `:encode_strategy` - Encoding strategy to use. Options:
-          * `:simd` — SIMD-accelerated scanning (default when NIF available)
-          * `:swar` — SWAR 8-byte scanning (no special hardware needed)
-          * `:scalar` — Byte-by-byte scanning (baseline)
+          * `:nif` — SIMD-accelerated NIF encoding (default when available)
           * `:elixir` — Pure Elixir encoding (original implementation)
 
-        NIF encoding strategies (`:simd`, `:swar`, `:scalar`) are only available
-        for UTF-8 modules without `escape_formula`. Other configurations
-        automatically fall back to `:elixir`.
+        NIF encoding is only available for UTF-8 modules without
+        `escape_formula`. Other configurations automatically fall back
+        to `:elixir`.
       """
       @impl RustyCSV
       @spec dump_to_iodata(Enumerable.t(), keyword()) :: iodata()
       def dump_to_iodata(enumerable, opts \\ []) do
-        encode_strategy = Keyword.get(opts, :encode_strategy, :simd)
+        encode_strategy = Keyword.get(opts, :encode_strategy, :nif)
 
         if @nif_encoding_available and encode_strategy != :elixir do
           # Collect rows to a list for the NIF
@@ -1171,31 +1169,12 @@ defmodule RustyCSV do
             end)
 
           result =
-            case encode_strategy do
-              :scalar ->
-                RustyCSV.Native.encode_string_scalar(
-                  rows,
-                  @separator_binaries,
-                  @escape_binary,
-                  @line_separator
-                )
-
-              :swar ->
-                RustyCSV.Native.encode_string_swar(
-                  rows,
-                  @separator_binaries,
-                  @escape_binary,
-                  @line_separator
-                )
-
-              _ ->
-                RustyCSV.Native.encode_string_simd(
-                  rows,
-                  @separator_binaries,
-                  @escape_binary,
-                  @line_separator
-                )
-            end
+            RustyCSV.Native.encode_string(
+              rows,
+              @separator_binaries,
+              @escape_binary,
+              @line_separator
+            )
 
           if @dump_bom do
             [@bom, result]

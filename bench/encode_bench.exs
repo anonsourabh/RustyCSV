@@ -1,12 +1,10 @@
-# CSV Encoding Benchmark: NIF strategies vs Pure Elixir
+# CSV Encoding Benchmark: NIF vs Pure Elixir
 #
 # Usage: mix run bench/encode_bench.exs
 #
 # Compares:
 #   - Pure Elixir encoding (dump_to_iodata with :elixir strategy)
-#   - NIF Scalar encoding (byte-by-byte scanning in Rust)
-#   - NIF SWAR encoding (8-byte Mycroft's trick)
-#   - NIF SIMD encoding (16/32-byte vectorized scanning)
+#   - NIF encoding (SIMD-accelerated scanning in Rust)
 
 defmodule EncodeBench do
   def run do
@@ -35,7 +33,7 @@ defmodule EncodeBench do
 
     # Warm up
     IO.puts("Warming up...")
-    for strategy <- [:elixir, :scalar, :swar, :simd] do
+    for strategy <- [:elixir, :nif] do
       _ = RustyCSV.RFC4180.dump_to_iodata(small_rows, encode_strategy: strategy)
     end
 
@@ -46,14 +44,8 @@ defmodule EncodeBench do
         "Elixir (pure)" => fn ->
           RustyCSV.RFC4180.dump_to_iodata(medium_rows, encode_strategy: :elixir)
         end,
-        "NIF (scalar)" => fn ->
-          RustyCSV.RFC4180.dump_to_iodata(medium_rows, encode_strategy: :scalar)
-        end,
-        "NIF (SWAR)" => fn ->
-          RustyCSV.RFC4180.dump_to_iodata(medium_rows, encode_strategy: :swar)
-        end,
         "NIF (SIMD)" => fn ->
-          RustyCSV.RFC4180.dump_to_iodata(medium_rows, encode_strategy: :simd)
+          RustyCSV.RFC4180.dump_to_iodata(medium_rows, encode_strategy: :nif)
         end
       },
       warmup: 2,
@@ -69,14 +61,8 @@ defmodule EncodeBench do
         "Elixir (pure)" => fn ->
           RustyCSV.RFC4180.dump_to_iodata(mixed_rows, encode_strategy: :elixir)
         end,
-        "NIF (scalar)" => fn ->
-          RustyCSV.RFC4180.dump_to_iodata(mixed_rows, encode_strategy: :scalar)
-        end,
-        "NIF (SWAR)" => fn ->
-          RustyCSV.RFC4180.dump_to_iodata(mixed_rows, encode_strategy: :swar)
-        end,
         "NIF (SIMD)" => fn ->
-          RustyCSV.RFC4180.dump_to_iodata(mixed_rows, encode_strategy: :simd)
+          RustyCSV.RFC4180.dump_to_iodata(mixed_rows, encode_strategy: :nif)
         end
       },
       warmup: 2,
@@ -92,14 +78,8 @@ defmodule EncodeBench do
         "Elixir (pure)" => fn ->
           RustyCSV.RFC4180.dump_to_iodata(large_rows, encode_strategy: :elixir)
         end,
-        "NIF (scalar)" => fn ->
-          RustyCSV.RFC4180.dump_to_iodata(large_rows, encode_strategy: :scalar)
-        end,
-        "NIF (SWAR)" => fn ->
-          RustyCSV.RFC4180.dump_to_iodata(large_rows, encode_strategy: :swar)
-        end,
         "NIF (SIMD)" => fn ->
-          RustyCSV.RFC4180.dump_to_iodata(large_rows, encode_strategy: :simd)
+          RustyCSV.RFC4180.dump_to_iodata(large_rows, encode_strategy: :nif)
         end
       },
       warmup: 2,
@@ -109,17 +89,11 @@ defmodule EncodeBench do
     )
 
     # Direct NIF benchmark (bypass Elixir wrapper overhead)
-    IO.puts("\n--- Direct NIF calls (10K rows, measuring NIF overhead) ---")
+    IO.puts("\n--- Direct NIF call (10K rows, measuring NIF overhead) ---")
     Benchee.run(
       %{
-        "NIF scalar (direct)" => fn ->
-          RustyCSV.Native.encode_string_scalar(medium_rows, ",", "\"", :default)
-        end,
-        "NIF SWAR (direct)" => fn ->
-          RustyCSV.Native.encode_string_swar(medium_rows, ",", "\"", :default)
-        end,
         "NIF SIMD (direct)" => fn ->
-          RustyCSV.Native.encode_string_simd(medium_rows, ",", "\"", :default)
+          RustyCSV.Native.encode_string(medium_rows, ",", "\"", :default)
         end
       },
       warmup: 2,
@@ -131,7 +105,7 @@ defmodule EncodeBench do
     # Output size comparison
     IO.puts("\n=== Output Size ===")
     elixir_out = RustyCSV.RFC4180.dump_to_iodata(medium_rows, encode_strategy: :elixir)
-    nif_out = RustyCSV.RFC4180.dump_to_iodata(medium_rows, encode_strategy: :simd)
+    nif_out = RustyCSV.RFC4180.dump_to_iodata(medium_rows, encode_strategy: :nif)
     IO.puts("  Elixir iodata size: #{IO.iodata_length(elixir_out)} bytes")
     IO.puts("  NIF binary size:    #{byte_size(nif_out)} bytes")
     IO.puts("  Match: #{IO.iodata_to_binary(elixir_out) == nif_out}")
@@ -164,39 +138,37 @@ defmodule EncodeBench do
       RustyCSV.RFC4180.dump_to_iodata(rows, encode_strategy: :elixir)
       |> IO.iodata_to_binary()
 
-    for strategy <- [:scalar, :swar, :simd] do
-      nif_result =
-        RustyCSV.RFC4180.dump_to_iodata(rows, encode_strategy: strategy)
-        |> IO.iodata_to_binary()
+    nif_result =
+      RustyCSV.RFC4180.dump_to_iodata(rows, encode_strategy: :nif)
+      |> IO.iodata_to_binary()
 
-      if elixir_result == nif_result do
-        IO.puts("  #{strategy}: PASS (#{byte_size(nif_result)} bytes)")
-      else
-        IO.puts("  #{strategy}: FAIL")
-        # Find first difference
-        elixir_bytes = :binary.bin_to_list(elixir_result)
-        nif_bytes = :binary.bin_to_list(nif_result)
+    if elixir_result == nif_result do
+      IO.puts("  NIF: PASS (#{byte_size(nif_result)} bytes)")
+    else
+      IO.puts("  NIF: FAIL")
+      # Find first difference
+      elixir_bytes = :binary.bin_to_list(elixir_result)
+      nif_bytes = :binary.bin_to_list(nif_result)
 
-        diff_pos =
-          elixir_bytes
-          |> Enum.zip(nif_bytes)
-          |> Enum.with_index()
-          |> Enum.find(fn {{a, b}, _} -> a != b end)
+      diff_pos =
+        elixir_bytes
+        |> Enum.zip(nif_bytes)
+        |> Enum.with_index()
+        |> Enum.find(fn {{a, b}, _} -> a != b end)
 
-        case diff_pos do
-          nil ->
-            IO.puts("    Lengths differ: elixir=#{byte_size(elixir_result)} nif=#{byte_size(nif_result)}")
+      case diff_pos do
+        nil ->
+          IO.puts("    Lengths differ: elixir=#{byte_size(elixir_result)} nif=#{byte_size(nif_result)}")
 
-          {{a, b}, idx} ->
-            IO.puts("    First diff at byte #{idx}: elixir=#{a} nif=#{b}")
-            context_start = max(0, idx - 20)
-            IO.puts(
-              "    Elixir context: #{inspect(binary_part(elixir_result, context_start, min(40, byte_size(elixir_result) - context_start)))}"
-            )
-            IO.puts(
-              "    NIF context:    #{inspect(binary_part(nif_result, context_start, min(40, byte_size(nif_result) - context_start)))}"
-            )
-        end
+        {{a, b}, idx} ->
+          IO.puts("    First diff at byte #{idx}: elixir=#{a} nif=#{b}")
+          context_start = max(0, idx - 20)
+          IO.puts(
+            "    Elixir context: #{inspect(binary_part(elixir_result, context_start, min(40, byte_size(elixir_result) - context_start)))}"
+          )
+          IO.puts(
+            "    NIF context:    #{inspect(binary_part(nif_result, context_start, min(40, byte_size(nif_result) - context_start)))}"
+          )
       end
     end
   end

@@ -535,11 +535,16 @@ defmodule RustyCSV.Native do
     do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
-  # Encoding NIFs
+  # Encoding NIF
   # ==========================================================================
 
   @doc """
-  Encode rows to CSV using scalar (byte-by-byte) scanning strategy.
+  Encode rows to CSV using SIMD-accelerated scanning.
+
+  Uses portable SIMD to scan 16-32 bytes at a time for characters that need
+  escaping. On platforms without SIMD hardware, portable_simd automatically
+  degrades to scalar operations. Falls back to a general encoder for
+  multi-byte separator/escape sequences.
 
   Accepts a list of rows, where each row is a list of binary fields.
   Returns a single binary containing the CSV-encoded output.
@@ -553,58 +558,12 @@ defmodule RustyCSV.Native do
 
   ## Examples
 
-      iex> RustyCSV.Native.encode_string_scalar([["a", "b"], ["1", "2"]], 44, 34, :default)
+      iex> RustyCSV.Native.encode_string([["a", "b"], ["1", "2"]], 44, 34, :default)
       "a,b\\n1,2\\n"
 
   """
-  @spec encode_string_scalar([[binary()]], separator(), escape(), binary() | atom()) :: binary()
-  def encode_string_scalar(_rows, _separator, _escape, _line_separator),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc """
-  Encode rows to CSV using SWAR (SIMD Within A Register) scanning strategy.
-
-  Processes 8 bytes at a time using Mycroft's trick on regular u64 registers.
-  No special hardware required. Good default for medium workloads.
-
-  ## Parameters
-
-    * `rows` - List of rows (list of lists of binaries)
-    * `separator` - Field separator (see "Separator Format" above)
-    * `escape` - Escape character (see "Escape Format" above)
-    * `line_separator` - Line separator binary or `:default` for `"\\n"`
-
-  ## Examples
-
-      iex> RustyCSV.Native.encode_string_swar([["a", "b"], ["1", "2"]], 44, 34, :default)
-      "a,b\\n1,2\\n"
-
-  """
-  @spec encode_string_swar([[binary()]], separator(), escape(), binary() | atom()) :: binary()
-  def encode_string_swar(_rows, _separator, _escape, _line_separator),
-    do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc """
-  Encode rows to CSV using SIMD-accelerated scanning strategy.
-
-  Uses portable SIMD to scan 16-32 bytes at a time for characters that need
-  escaping. Fastest strategy on supported hardware.
-
-  ## Parameters
-
-    * `rows` - List of rows (list of lists of binaries)
-    * `separator` - Field separator (see "Separator Format" above)
-    * `escape` - Escape character (see "Escape Format" above)
-    * `line_separator` - Line separator binary or `:default` for `"\\n"`
-
-  ## Examples
-
-      iex> RustyCSV.Native.encode_string_simd([["a", "b"], ["1", "2"]], 44, 34, :default)
-      "a,b\\n1,2\\n"
-
-  """
-  @spec encode_string_simd([[binary()]], separator(), escape(), binary() | atom()) :: binary()
-  def encode_string_simd(_rows, _separator, _escape, _line_separator),
+  @spec encode_string([[binary()]], separator(), escape(), binary() | atom()) :: binary()
+  def encode_string(_rows, _separator, _escape, _line_separator),
     do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================

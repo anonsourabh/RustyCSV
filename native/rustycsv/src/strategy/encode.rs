@@ -1,6 +1,6 @@
 // CSV encoding strategies — convert rows of fields back to CSV format
 //
-// Three strategies with increasing hardware acceleration:
+// Three scanning strategies with increasing hardware acceleration:
 //
 // Scalar:  byte-by-byte scan for characters needing escaping. Baseline.
 // SWAR:    SIMD Within A Register — Mycroft's trick on u64, 8 bytes/op. No SIMD HW needed.
@@ -12,8 +12,14 @@
 // 3. If found: wrap in escape chars and double any escape chars inside.
 //
 // The strategies differ only in how step 1 (scanning) is performed.
+// The row-writing loop is shared via `encode_csv_rows`, parameterized by
+// a scanning closure.
 
 use std::simd::prelude::*;
+
+use crate::core::simd_scanner::CHUNK;
+#[cfg(target_feature = "avx2")]
+use crate::core::simd_scanner::WIDE;
 
 // ==========================================================================
 // Shared: output buffer helpers
@@ -69,6 +75,78 @@ fn write_quoted_field_general(out: &mut Vec<u8>, field: &[u8], escape: &[u8]) {
 }
 
 // ==========================================================================
+// Generic row-writing loop (single-byte separator + escape)
+// ==========================================================================
+
+/// Encode rows to CSV using a caller-provided field scanning function.
+///
+/// The `needs_quoting` closure checks whether a field contains characters
+/// that require quoting. This is the only part that varies between strategies.
+#[inline]
+fn encode_csv_rows<F>(
+    rows: &[&[&[u8]]],
+    separator: u8,
+    escape: u8,
+    line_separator: &[u8],
+    needs_quoting: F,
+) -> Vec<u8>
+where
+    F: Fn(&[u8], u8, u8) -> bool,
+{
+    let mut out = Vec::with_capacity(estimate_output_size(rows, 1, line_separator.len()));
+
+    for row in rows {
+        for (i, field) in row.iter().enumerate() {
+            if i > 0 {
+                out.push(separator);
+            }
+            if needs_quoting(field, separator, escape) {
+                write_quoted_field(&mut out, field, escape);
+            } else {
+                out.extend_from_slice(field);
+            }
+        }
+        out.extend_from_slice(line_separator);
+    }
+
+    out
+}
+
+/// Encode rows to CSV using a caller-provided multi-separator scanning function.
+///
+/// The `needs_quoting` closure takes (field, separators, escape).
+#[inline]
+fn encode_csv_rows_multi_sep<F>(
+    rows: &[&[&[u8]]],
+    separators: &[u8],
+    escape: u8,
+    line_separator: &[u8],
+    needs_quoting: F,
+) -> Vec<u8>
+where
+    F: Fn(&[u8], &[u8], u8) -> bool,
+{
+    let dump_sep = separators[0]; // Use first separator for output
+    let mut out = Vec::with_capacity(estimate_output_size(rows, 1, line_separator.len()));
+
+    for row in rows {
+        for (i, field) in row.iter().enumerate() {
+            if i > 0 {
+                out.push(dump_sep);
+            }
+            if needs_quoting(field, separators, escape) {
+                write_quoted_field(&mut out, field, escape);
+            } else {
+                out.extend_from_slice(field);
+            }
+        }
+        out.extend_from_slice(line_separator);
+    }
+
+    out
+}
+
+// ==========================================================================
 // Strategy 1: Scalar — byte-by-byte scanning
 // ==========================================================================
 
@@ -101,23 +179,7 @@ pub fn encode_csv_scalar(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(estimate_output_size(rows, 1, line_separator.len()));
-
-    for row in rows {
-        for (i, field) in row.iter().enumerate() {
-            if i > 0 {
-                out.push(separator);
-            }
-            if field_needs_quoting_scalar(field, separator, escape) {
-                write_quoted_field(&mut out, field, escape);
-            } else {
-                out.extend_from_slice(field);
-            }
-        }
-        out.extend_from_slice(line_separator);
-    }
-
-    out
+    encode_csv_rows(rows, separator, escape, line_separator, field_needs_quoting_scalar)
 }
 
 /// Encode rows to CSV using scalar scanning, multi-separator variant.
@@ -127,25 +189,12 @@ pub fn encode_csv_scalar_multi_sep(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    let dump_sep = separators[0]; // Use first separator for dumping
-    let mut out = Vec::with_capacity(estimate_output_size(rows, 1, line_separator.len()));
-
-    for row in rows {
-        for (i, field) in row.iter().enumerate() {
-            if i > 0 {
-                out.push(dump_sep);
-            }
-            if field_needs_quoting_scalar_multi_sep(field, separators, escape) {
-                write_quoted_field(&mut out, field, escape);
-            } else {
-                out.extend_from_slice(field);
-            }
-        }
-        out.extend_from_slice(line_separator);
-    }
-
-    out
+    encode_csv_rows_multi_sep(rows, separators, escape, line_separator, field_needs_quoting_scalar_multi_sep)
 }
+
+// ==========================================================================
+// General: multi-byte separator/escape (always scalar)
+// ==========================================================================
 
 /// Encode rows with multi-byte separators/escape (general, scalar only).
 pub fn encode_csv_general(
@@ -309,23 +358,7 @@ pub fn encode_csv_swar(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(estimate_output_size(rows, 1, line_separator.len()));
-
-    for row in rows {
-        for (i, field) in row.iter().enumerate() {
-            if i > 0 {
-                out.push(separator);
-            }
-            if field_needs_quoting_swar(field, separator, escape) {
-                write_quoted_field(&mut out, field, escape);
-            } else {
-                out.extend_from_slice(field);
-            }
-        }
-        out.extend_from_slice(line_separator);
-    }
-
-    out
+    encode_csv_rows(rows, separator, escape, line_separator, field_needs_quoting_swar)
 }
 
 /// Encode rows to CSV using SWAR scanning, multi-separator variant.
@@ -335,36 +368,12 @@ pub fn encode_csv_swar_multi_sep(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    let dump_sep = separators[0];
-    let mut out = Vec::with_capacity(estimate_output_size(rows, 1, line_separator.len()));
-
-    for row in rows {
-        for (i, field) in row.iter().enumerate() {
-            if i > 0 {
-                out.push(dump_sep);
-            }
-            if field_needs_quoting_swar_multi_sep(field, separators, escape) {
-                write_quoted_field(&mut out, field, escape);
-            } else {
-                out.extend_from_slice(field);
-            }
-        }
-        out.extend_from_slice(line_separator);
-    }
-
-    out
+    encode_csv_rows_multi_sep(rows, separators, escape, line_separator, field_needs_quoting_swar_multi_sep)
 }
 
 // ==========================================================================
 // Strategy 3: SIMD — portable_simd vectorized scanning
 // ==========================================================================
-
-/// Baseline SIMD chunk size (128-bit).
-const CHUNK: usize = 16;
-
-/// Wide chunk size for AVX2 targets.
-#[cfg(target_feature = "avx2")]
-const WIDE: usize = 32;
 
 /// SIMD: check if field needs quoting using vectorized comparison.
 #[inline]
@@ -501,23 +510,7 @@ pub fn encode_csv_simd(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(estimate_output_size(rows, 1, line_separator.len()));
-
-    for row in rows {
-        for (i, field) in row.iter().enumerate() {
-            if i > 0 {
-                out.push(separator);
-            }
-            if field_needs_quoting_simd(field, separator, escape) {
-                write_quoted_field(&mut out, field, escape);
-            } else {
-                out.extend_from_slice(field);
-            }
-        }
-        out.extend_from_slice(line_separator);
-    }
-
-    out
+    encode_csv_rows(rows, separator, escape, line_separator, field_needs_quoting_simd)
 }
 
 /// Encode rows to CSV using SIMD scanning, multi-separator variant.
@@ -527,24 +520,7 @@ pub fn encode_csv_simd_multi_sep(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    let dump_sep = separators[0];
-    let mut out = Vec::with_capacity(estimate_output_size(rows, 1, line_separator.len()));
-
-    for row in rows {
-        for (i, field) in row.iter().enumerate() {
-            if i > 0 {
-                out.push(dump_sep);
-            }
-            if field_needs_quoting_simd_multi_sep(field, separators, escape) {
-                write_quoted_field(&mut out, field, escape);
-            } else {
-                out.extend_from_slice(field);
-            }
-        }
-        out.extend_from_slice(line_separator);
-    }
-
-    out
+    encode_csv_rows_multi_sep(rows, separators, escape, line_separator, field_needs_quoting_simd_multi_sep)
 }
 
 // ==========================================================================
