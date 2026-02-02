@@ -82,7 +82,10 @@ mod tests {
         assert_eq!(nl3.max_pattern_len(), 2);
 
         // Empty patterns list (should not happen in practice, but must not panic)
-        let nl4 = Newlines { patterns: vec![], is_default: false };
+        let nl4 = Newlines {
+            patterns: vec![],
+            is_default: false,
+        };
         assert_eq!(nl4.max_pattern_len(), 1); // unwrap_or(1) fallback
     }
 
@@ -118,5 +121,4 @@ mod tests {
         let input = b"a||b";
         assert_eq!(match_newline(input, 1, &nl), 2); // "||" matches (longest first)
     }
-
 }

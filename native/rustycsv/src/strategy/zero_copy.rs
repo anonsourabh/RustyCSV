@@ -22,7 +22,8 @@ pub fn parse_csv_boundaries_with_config(
     let mut rows = Vec::with_capacity(idx.row_count());
 
     for row in idx.rows_with_fields() {
-        let boundaries: Vec<(usize, usize)> = row.fields
+        let boundaries: Vec<(usize, usize)> = row
+            .fields
             .map(|(fs, fe)| (fs as usize, fe as usize))
             .collect();
 
@@ -48,7 +49,8 @@ pub fn parse_csv_boundaries_multi_sep(
     let mut rows = Vec::with_capacity(idx.row_count());
 
     for row in idx.rows_with_fields() {
-        let boundaries: Vec<(usize, usize)> = row.fields
+        let boundaries: Vec<(usize, usize)> = row
+            .fields
             .map(|(fs, fe)| (fs as usize, fe as usize))
             .collect();
 

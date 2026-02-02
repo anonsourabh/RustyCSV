@@ -4,14 +4,12 @@
 // A new scenario automatically tests direct, two_phase, parallel, zero_copy,
 // and streaming parsers. Failures pinpoint which strategy diverges.
 
-use rustycsv::strategy::direct::{parse_csv_full_with_config, parse_csv_full_multi_sep};
-use rustycsv::strategy::parallel::{
-    parse_csv_parallel_with_config, parse_csv_parallel_multi_sep,
-};
+use rustycsv::strategy::direct::{parse_csv_full_multi_sep, parse_csv_full_with_config};
+use rustycsv::strategy::parallel::{parse_csv_parallel_multi_sep, parse_csv_parallel_with_config};
 use rustycsv::strategy::streaming::StreamingParser;
 use rustycsv::strategy::two_phase::parse_csv_indexed_with_config;
 use rustycsv::strategy::zero_copy::{
-    parse_csv_boundaries_with_config, parse_csv_boundaries_multi_sep,
+    parse_csv_boundaries_multi_sep, parse_csv_boundaries_with_config,
 };
 
 use std::borrow::Cow;
@@ -105,10 +103,8 @@ macro_rules! conformance {
             assert_eq!(parallel, expected_nonempty, "FAILED: parallel");
 
             // Zero-copy (preserves all rows including empty)
-            let zc = boundaries_to_strings(
-                input,
-                parse_csv_boundaries_with_config(input, sep, b'"'),
-            );
+            let zc =
+                boundaries_to_strings(input, parse_csv_boundaries_with_config(input, sep, b'"'));
             assert_eq!(zc, expected_strings, "FAILED: zero_copy");
 
             // Streaming (skips empty rows)
@@ -245,10 +241,8 @@ macro_rules! conformance_multi_sep {
             assert_eq!(parallel, expected_nonempty, "FAILED: parallel multi_sep");
 
             // Zero-copy
-            let zc = boundaries_to_strings(
-                input,
-                parse_csv_boundaries_multi_sep(input, seps, b'"'),
-            );
+            let zc =
+                boundaries_to_strings(input, parse_csv_boundaries_multi_sep(input, seps, b'"'));
             assert_eq!(zc, expected_nonempty, "FAILED: zero_copy multi_sep");
         }
     };
@@ -265,14 +259,14 @@ conformance_multi_sep!(
 // General multi-byte conformance (runs same input through all general strategies)
 // ---------------------------------------------------------------------------
 
+use rustycsv::core::newlines::Newlines;
 use rustycsv::strategy::general::{
-    parse_csv_general, parse_csv_indexed_general, parse_csv_parallel_general,
-    parse_csv_boundaries_general, GeneralStreamingParser,
-    parse_csv_general_with_newlines, parse_csv_indexed_general_with_newlines,
-    parse_csv_parallel_general_with_newlines, parse_csv_boundaries_general_with_newlines,
+    parse_csv_boundaries_general, parse_csv_boundaries_general_with_newlines, parse_csv_general,
+    parse_csv_general_with_newlines, parse_csv_indexed_general,
+    parse_csv_indexed_general_with_newlines, parse_csv_parallel_general,
+    parse_csv_parallel_general_with_newlines, GeneralStreamingParser,
     GeneralStreamingParserNewlines,
 };
-use rustycsv::core::newlines::Newlines;
 
 macro_rules! conformance_general {
     ($name:ident, input: $input:expr, seps: $seps:expr, esc: $esc:expr, expected: $expected:expr) => {
@@ -308,7 +302,11 @@ macro_rules! conformance_general {
             // Boundaries (skips empty rows)
             // Note: boundaries returns raw positions, verify count and field count
             let boundaries = parse_csv_boundaries_general(input, &seps, &esc);
-            assert_eq!(boundaries.len(), expected_nonempty.len(), "FAILED: general boundaries row count");
+            assert_eq!(
+                boundaries.len(),
+                expected_nonempty.len(),
+                "FAILED: general boundaries row count"
+            );
 
             // Streaming
             let mut parser = GeneralStreamingParser::new(seps.clone(), esc.clone());
@@ -358,19 +356,28 @@ macro_rules! conformance_custom_newline {
             assert_eq!(direct, expected_strings, "FAILED: custom_nl direct");
 
             // Indexed with newlines
-            let indexed = cow_to_strings(parse_csv_indexed_general_with_newlines(input, &seps, &esc, &nl));
+            let indexed = cow_to_strings(parse_csv_indexed_general_with_newlines(
+                input, &seps, &esc, &nl,
+            ));
             assert_eq!(indexed, expected_strings, "FAILED: custom_nl indexed");
 
             // Parallel with newlines (skips empty rows)
-            let parallel = owned_to_strings(parse_csv_parallel_general_with_newlines(input, &seps, &esc, &nl));
+            let parallel = owned_to_strings(parse_csv_parallel_general_with_newlines(
+                input, &seps, &esc, &nl,
+            ));
             assert_eq!(parallel, expected_nonempty, "FAILED: custom_nl parallel");
 
             // Boundaries with newlines
             let boundaries = parse_csv_boundaries_general_with_newlines(input, &seps, &esc, &nl);
-            assert_eq!(boundaries.len(), expected_nonempty.len(), "FAILED: custom_nl boundaries row count");
+            assert_eq!(
+                boundaries.len(),
+                expected_nonempty.len(),
+                "FAILED: custom_nl boundaries row count"
+            );
 
             // Streaming with newlines
-            let mut parser = GeneralStreamingParserNewlines::new(seps.clone(), esc.clone(), nl.clone());
+            let mut parser =
+                GeneralStreamingParserNewlines::new(seps.clone(), esc.clone(), nl.clone());
             parser.feed(input).unwrap();
             let mut rows = parser.take_rows(usize::MAX);
             rows.extend(parser.finalize());

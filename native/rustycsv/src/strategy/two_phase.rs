@@ -5,7 +5,10 @@
 //
 // Benefits: Better cache utilization, can skip rows, predictable memory usage
 
-use crate::core::{extract_field, extract_field_cow, extract_field_cow_with_escape, scan_structural, StructuralIndex};
+use crate::core::{
+    extract_field, extract_field_cow, extract_field_cow_with_escape, scan_structural,
+    StructuralIndex,
+};
 use std::borrow::Cow;
 
 /// Represents a field's position within a row
@@ -45,7 +48,8 @@ fn structural_to_csv_index(idx: &StructuralIndex, input: &[u8]) -> CsvIndex {
         let re = row.content_end as usize;
         row_bounds.push((rs, re));
 
-        let fields: Vec<FieldBound> = row.fields
+        let fields: Vec<FieldBound> = row
+            .fields
             .map(|(fs, fe)| FieldBound {
                 start: fs as usize,
                 end: fe as usize,

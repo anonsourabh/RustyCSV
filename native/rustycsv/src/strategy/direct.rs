@@ -22,7 +22,8 @@ pub fn parse_csv_full_with_config(
     let mut rows = Vec::with_capacity(idx.row_count());
 
     for row in idx.rows_with_fields() {
-        let fields: Vec<Cow<'_, [u8]>> = row.fields
+        let fields: Vec<Cow<'_, [u8]>> = row
+            .fields
             .map(|(fs, fe)| extract_field_cow_with_escape(input, fs as usize, fe as usize, escape))
             .collect();
         rows.push(fields);
@@ -45,7 +46,8 @@ pub fn parse_csv_full_multi_sep<'a>(
     let mut rows = Vec::with_capacity(idx.row_count());
 
     for row in idx.rows_with_fields() {
-        let fields: Vec<Cow<'a, [u8]>> = row.fields
+        let fields: Vec<Cow<'a, [u8]>> = row
+            .fields
             .map(|(fs, fe)| extract_field_cow_with_escape(input, fs as usize, fe as usize, escape))
             .collect();
         rows.push(fields);

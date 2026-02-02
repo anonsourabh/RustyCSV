@@ -448,16 +448,16 @@ mod tests {
 
         // Verify portable implementation against reference for interesting masks
         let test_masks: &[u64] = &[
-            0,          // no quotes
-            1,          // single quote at position 0
-            0b11,       // two adjacent quotes (open+close, cancels out)
-            0b101,      // quotes at 0 and 2
-            0b1000,     // single quote at position 3
-            0b1001,     // quotes at 0 and 3
-            0xFF,       // 8 consecutive quotes
-            0xAAAA,     // alternating bits
-            0x8001,     // quotes at 0 and 15
-            0xFFFF,     // all 16 bits
+            0,      // no quotes
+            1,      // single quote at position 0
+            0b11,   // two adjacent quotes (open+close, cancels out)
+            0b101,  // quotes at 0 and 2
+            0b1000, // single quote at position 3
+            0b1001, // quotes at 0 and 3
+            0xFF,   // 8 consecutive quotes
+            0xAAAA, // alternating bits
+            0x8001, // quotes at 0 and 15
+            0xFFFF, // all 16 bits
         ];
 
         for &mask in test_masks {
@@ -499,7 +499,11 @@ mod tests {
         // positions: a=0 ,=1 "=2 b=3 ,=4 c=5 "=6 ,=7 d=8 \n=9
         let idx = scan(input);
 
-        assert_eq!(idx.field_seps, vec![1, 7], "comma at pos 4 must be suppressed");
+        assert_eq!(
+            idx.field_seps,
+            vec![1, 7],
+            "comma at pos 4 must be suppressed"
+        );
         assert_eq!(idx.row_ends, vec![RowEnd { pos: 9, len: 1 }]);
     }
 
@@ -543,7 +547,8 @@ mod tests {
         let idx = scan(input);
 
         assert_eq!(
-            idx.field_seps, vec![12],
+            idx.field_seps,
+            vec![12],
             "only the comma between fields should be detected"
         );
         assert_eq!(idx.row_ends, vec![RowEnd { pos: 17, len: 1 }]);
@@ -611,7 +616,7 @@ mod tests {
         let mut input = Vec::new();
         input.extend_from_slice(b"x,\"0123456789ab"); // 16 bytes: x=0 ,=1 "=2 then data
         input.extend_from_slice(b"cdefghij\",y\n"); // "=23 ,=24 y=25 \n=26
-        // Total: 28 bytes — 16-byte SIMD chunk + 12-byte scalar tail
+                                                    // Total: 28 bytes — 16-byte SIMD chunk + 12-byte scalar tail
 
         let idx = scan_structural(&input, b",", b'"');
 
@@ -633,18 +638,18 @@ mod tests {
         // Second chunk sees unquoted content with separators.
         let mut input = Vec::new();
         input.extend_from_slice(b"\"abcdefghijklm\""); // 16 bytes: "=0, data, "=15 (wait that's 15 chars + 1 = 16 but I need quotes at 0 and 14)
-        // Let me be precise: `"abcdefghijklm"` = " a b c d e f g h i j k l m " = 15 bytes, not 16.
-        // Use `"abcdefghijklmn"` = 16 bytes: "=0 data=1..14 "=15
+                                                       // Let me be precise: `"abcdefghijklm"` = " a b c d e f g h i j k l m " = 15 bytes, not 16.
+                                                       // Use `"abcdefghijklmn"` = 16 bytes: "=0 data=1..14 "=15
         input.clear();
         input.extend_from_slice(b"\"abcdefghijklmn\""); // 17 bytes, but I need exactly 16 for first chunk
-        // Actually: `"0123456789abc"` = " 0 1 2 3 4 5 6 7 8 9 a b c " = 15 bytes.
-        // For 16 bytes: `"0123456789abcd"` = 16 bytes with " at 0 and " at 15.
+                                                        // Actually: `"0123456789abc"` = " 0 1 2 3 4 5 6 7 8 9 a b c " = 15 bytes.
+                                                        // For 16 bytes: `"0123456789abcd"` = 16 bytes with " at 0 and " at 15.
         input.clear();
         input.extend_from_slice(b"\"0123456789abcd\""); // This is 17 bytes: " at 0, data at 1-14, " at 15... wait no:
-        // b"\"0123456789abcd\"" = \" produces one byte (the literal quote)
-        // So: quote, 0-9 (10), a-d (4), quote = 16 bytes total. Yes!
-        // positions: "=0 0=1 1=2 ... d=14 "=15
-        // Two quotes in this chunk → even → carry = 0
+                                                        // b"\"0123456789abcd\"" = \" produces one byte (the literal quote)
+                                                        // So: quote, 0-9 (10), a-d (4), quote = 16 bytes total. Yes!
+                                                        // positions: "=0 0=1 1=2 ... d=14 "=15
+                                                        // Two quotes in this chunk → even → carry = 0
         input.clear();
         input.extend_from_slice(b"\"0123456789abcd\"");
         input.extend_from_slice(b",x,y\n");
@@ -666,10 +671,10 @@ mod tests {
         // 1 quote in first chunk → odd → carry = 1.
         let mut input = vec![b'"'];
         input.extend_from_slice(&[b'x'; 14]); // fill to 15 bytes
-        // Now we're at 15 bytes. Add a comma inside the quote to verify suppression.
+                                              // Now we're at 15 bytes. Add a comma inside the quote to verify suppression.
         input.push(b','); // position 15, inside quotes
-        // 16 bytes: "=0 x*14=1..14 ,=15 → this is one SIMD chunk
-        // carry after this chunk: 1 quote → carry = 1
+                          // 16 bytes: "=0 x*14=1..14 ,=15 → this is one SIMD chunk
+                          // carry after this chunk: 1 quote → carry = 1
 
         // Second chunk (scalar tail): close quote, real separator, data, newline
         input.extend_from_slice(b"\",y\n"); // "=16 ,=17 y=18 \n=19
@@ -695,7 +700,10 @@ mod tests {
 
         assert_eq!(idx.field_seps, vec![1]);
         assert_eq!(idx.row_ends, vec![RowEnd { pos: 3, len: 1 }]);
-        assert_eq!(idx.fields_in_row(0, 3).collect::<Vec<_>>(), vec![(0, 1), (2, 3)]);
+        assert_eq!(
+            idx.fields_in_row(0, 3).collect::<Vec<_>>(),
+            vec![(0, 1), (2, 3)]
+        );
     }
 
     #[test]
@@ -705,7 +713,11 @@ mod tests {
 
         assert_eq!(idx.field_seps, vec![]);
         assert_eq!(idx.row_ends, vec![]);
-        assert_eq!(idx.row_count(), 1, "trailing content without newline is one row");
+        assert_eq!(
+            idx.row_count(),
+            1,
+            "trailing content without newline is one row"
+        );
         let fields: Vec<_> = idx.fields_in_row(0, 5).collect();
         assert_eq!(fields, vec![(0, 5)]);
     }
@@ -731,7 +743,10 @@ mod tests {
 
         assert_eq!(idx.field_seps, vec![1, 3]);
         assert_eq!(idx.row_ends, vec![RowEnd { pos: 5, len: 1 }]);
-        assert_eq!(idx.fields_in_row(0, 5).collect::<Vec<_>>(), vec![(0, 1), (2, 3), (4, 5)]);
+        assert_eq!(
+            idx.fields_in_row(0, 5).collect::<Vec<_>>(),
+            vec![(0, 1), (2, 3), (4, 5)]
+        );
     }
 
     // =======================================================================
@@ -773,8 +788,7 @@ mod tests {
         let mut seps = Vec::new();
         let mut ends = Vec::new();
 
-        let carry =
-            scan_structural_incremental(input, 0, b",", b'"', false, &mut seps, &mut ends);
+        let carry = scan_structural_incremental(input, 0, b",", b'"', false, &mut seps, &mut ends);
 
         assert!(!carry);
         assert_eq!(seps, vec![1, 5]);
@@ -797,11 +811,14 @@ mod tests {
         let mut seps = Vec::new();
         let mut ends = Vec::new();
 
-        let carry =
-            scan_structural_incremental(input, 0, b",", b'"', true, &mut seps, &mut ends);
+        let carry = scan_structural_incremental(input, 0, b",", b'"', true, &mut seps, &mut ends);
 
         assert!(!carry, "quote closed at pos 11, should not be in quotes");
-        assert_eq!(seps, vec![12], "comma at 6 is inside quotes, only 12 is real");
+        assert_eq!(
+            seps,
+            vec![12],
+            "comma at 6 is inside quotes, only 12 is real"
+        );
         assert_eq!(ends, vec![RowEnd { pos: 17, len: 1 }]);
     }
 }

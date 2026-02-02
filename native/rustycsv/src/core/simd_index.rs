@@ -43,13 +43,9 @@ impl StructuralIndex {
     #[inline]
     pub fn fields_in_row(&self, row_start: u32, row_content_end: u32) -> FieldIter<'_> {
         // Find first separator >= row_start
-        let lo = self
-            .field_seps
-            .partition_point(|&s| s < row_start);
+        let lo = self.field_seps.partition_point(|&s| s < row_start);
         // Find first separator >= row_content_end (all seps before this are in the row)
-        let hi = self
-            .field_seps
-            .partition_point(|&s| s < row_content_end);
+        let hi = self.field_seps.partition_point(|&s| s < row_content_end);
 
         FieldIter {
             seps: &self.field_seps[lo..hi],
@@ -66,7 +62,11 @@ impl StructuralIndex {
         let n = self.row_ends.len();
         // If there's content after the last row_end (no trailing newline), there's one more row.
         if n == 0 {
-            if self.input_len > 0 { 1 } else { 0 }
+            if self.input_len > 0 {
+                1
+            } else {
+                0
+            }
         } else {
             let last = &self.row_ends[n - 1];
             let after_last = last.pos as usize + last.len as usize;
@@ -298,7 +298,11 @@ mod tests {
     fn test_row_count_trailing_content() {
         // "a,b" (no trailing newline) — 3 bytes, no row_ends
         let idx = make_index(vec![1], vec![], 3);
-        assert_eq!(idx.row_count(), 1, "content after last row_end counts as a row");
+        assert_eq!(
+            idx.row_count(),
+            1,
+            "content after last row_end counts as a row"
+        );
 
         // Empty input
         let idx = make_index(vec![], vec![], 0);
@@ -352,8 +356,8 @@ mod tests {
 
         assert_eq!(cursor.len(), 3);
         assert_eq!(cursor[0], vec![(0, 1), (2, 3), (4, 5)]); // a,b,c
-        assert_eq!(cursor[1], vec![(6, 7), (8, 9)]);          // d,e
-        assert_eq!(cursor[2], vec![(10, 11)]);                 // f
+        assert_eq!(cursor[1], vec![(6, 7), (8, 9)]); // d,e
+        assert_eq!(cursor[2], vec![(10, 11)]); // f
     }
 
     #[test]
@@ -367,6 +371,6 @@ mod tests {
         assert_eq!(cursor, bsearch);
         assert_eq!(cursor.len(), 2);
         assert_eq!(cursor[0], vec![(0, 1), (2, 3)]); // a,b
-        assert_eq!(cursor[1], vec![(4, 5)]);          // c
+        assert_eq!(cursor[1], vec![(4, 5)]); // c
     }
 }
