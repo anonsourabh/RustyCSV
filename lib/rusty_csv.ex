@@ -1168,8 +1168,7 @@ defmodule RustyCSV do
       :unicode.characters_to_binary(config.line_separator, :utf8, config.encoding)
 
     # Determine if NIF encoding is possible (UTF-8, no escape_formula)
-    nif_encoding_available =
-      config.encoding == :utf8 and config.escape_formula == nil
+    nif_encoding_available = config.encoding == :utf8 and config.escape_formula == nil
 
     quote do
       # Pre-encoded delimiters for dumping

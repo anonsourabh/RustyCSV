@@ -483,8 +483,7 @@ defmodule RustyCSV.HeadersTest do
 
   describe "custom parser with multi-byte separator" do
     test "headers: true with :: separator" do
-      result =
-        MultiSep.parse_string("name::age\njohn::27\n", headers: true)
+      result = MultiSep.parse_string("name::age\njohn::27\n", headers: true)
 
       assert result == [%{"name" => "john", "age" => "27"}]
     end
@@ -501,8 +500,7 @@ defmodule RustyCSV.HeadersTest do
 
   describe "custom parser with multi-separator" do
     test "headers: true with multiple separators" do
-      result =
-        FlexSep.parse_string("name,age\njohn;27\n", headers: true)
+      result = FlexSep.parse_string("name,age\njohn;27\n", headers: true)
 
       assert result == [%{"name" => "john", "age" => "27"}]
     end
@@ -510,8 +508,7 @@ defmodule RustyCSV.HeadersTest do
 
   describe "custom parser with multi-byte escape" do
     test "headers: true with $$ escape" do
-      result =
-        MultiEsc.parse_string("$$name$$,age\njohn,27\n", headers: true)
+      result = MultiEsc.parse_string("$$name$$,age\njohn,27\n", headers: true)
 
       assert result == [%{"name" => "john", "age" => "27"}]
     end

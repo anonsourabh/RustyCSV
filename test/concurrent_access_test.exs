@@ -145,8 +145,7 @@ defmodule RustyCSV.ConcurrentAccessTest do
             csv = "h1,h2\nval_#{i}_1,val_#{i}_2\n"
 
             for strategy <- [:basic, :simd, :indexed, :parallel, :zero_copy] do
-              result =
-                RustyCSV.RFC4180.parse_string(csv, strategy: strategy, skip_headers: false)
+              result = RustyCSV.RFC4180.parse_string(csv, strategy: strategy, skip_headers: false)
 
               assert result == [["h1", "h2"], ["val_#{i}_1", "val_#{i}_2"]]
               strategy
