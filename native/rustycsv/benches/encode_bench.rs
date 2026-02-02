@@ -16,6 +16,78 @@ use rustycsv::strategy::encode::{
     encode_csv_scalar, encode_csv_simd, encode_csv_swar,
 };
 
+// ==========================================================================
+// "Elixir-style" naive encoder — simulates what the BEAM does
+// ==========================================================================
+// This mirrors the Elixir dump_to_iodata logic:
+//   1. For each field: String.contains?(field, escape_chars) — linear scan
+//   2. If needs escaping: String.replace(field, escape, escape <> escape) — allocates new string
+//   3. Wrap in escape chars
+//   4. Enum.intersperse(fields, separator) — builds list
+//   5. Concat everything
+//
+// In Rust we simulate this with per-field String allocations and Vec<String>
+// joins. This is a LOWER BOUND on Elixir's cost since we don't pay for:
+//   - BEAM term construction overhead
+//   - Process heap allocation / GC pressure
+//   - List cell allocation for iodata
+//   - Copying from Rust-managed memory to BEAM binaries
+
+fn encode_csv_naive(rows: &[&[&[u8]]], separator: u8, escape: u8, line_sep: &[u8]) -> Vec<u8> {
+    let escape_chars: &[u8] = &[separator, escape, b'\n', b'\r'];
+    let mut parts: Vec<Vec<u8>> = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let mut field_strings: Vec<Vec<u8>> = Vec::with_capacity(row.len());
+
+        for field in *row {
+            // Step 1: String.contains?(field, @escape_chars) — linear scan
+            let needs_quoting = field.iter().any(|b| escape_chars.contains(b));
+
+            if needs_quoting {
+                // Step 2: String.replace(field, escape, escape <> escape) — new allocation
+                let mut escaped = Vec::with_capacity(field.len() + 10);
+                for &b in *field {
+                    if b == escape {
+                        escaped.push(escape);
+                        escaped.push(escape);
+                    } else {
+                        escaped.push(b);
+                    }
+                }
+                // Step 3: Wrap in escape chars
+                let mut quoted = Vec::with_capacity(escaped.len() + 2);
+                quoted.push(escape);
+                quoted.extend_from_slice(&escaped);
+                quoted.push(escape);
+                field_strings.push(quoted);
+            } else {
+                // Copy the field (Elixir's maybe_to_encoding still touches it)
+                field_strings.push(field.to_vec());
+            }
+        }
+
+        // Step 4: Enum.intersperse + join — builds iodata list then flattens
+        let mut row_out = Vec::new();
+        for (i, f) in field_strings.iter().enumerate() {
+            if i > 0 {
+                row_out.push(separator);
+            }
+            row_out.extend_from_slice(f);
+        }
+        row_out.extend_from_slice(line_sep);
+        parts.push(row_out);
+    }
+
+    // IO.iodata_to_binary — final concatenation
+    let total_len: usize = parts.iter().map(|p| p.len()).sum();
+    let mut out = Vec::with_capacity(total_len);
+    for part in &parts {
+        out.extend_from_slice(part);
+    }
+    out
+}
+
 /// Generate clean rows (no fields need quoting)
 fn generate_clean_rows(num_rows: usize, fields_per_row: usize) -> Vec<Vec<Vec<u8>>> {
     (0..num_rows)
@@ -153,6 +225,9 @@ fn run_benchmark_suite(
     println!("\n--- {} ---", label);
 
     let results = vec![
+        bench_fn("Naive (Elixir-like)", || {
+            encode_csv_naive(&row_slices, b',', b'"', b"\n")
+        }, warmup, time),
         bench_fn("Scalar", || {
             encode_csv_scalar(&row_slices, b',', b'"', b"\n")
         }, warmup, time),
@@ -165,9 +240,11 @@ fn run_benchmark_suite(
     ];
 
     // Verify all produce identical output
+    let naive_out = encode_csv_naive(&row_slices, b',', b'"', b"\n");
     let scalar_out = encode_csv_scalar(&row_slices, b',', b'"', b"\n");
     let swar_out = encode_csv_swar(&row_slices, b',', b'"', b"\n");
     let simd_out = encode_csv_simd(&row_slices, b',', b'"', b"\n");
+    assert_eq!(naive_out, scalar_out, "Scalar output differs from naive!");
     assert_eq!(scalar_out, swar_out, "SWAR output differs from scalar!");
     assert_eq!(scalar_out, simd_out, "SIMD output differs from scalar!");
     println!("  Output: {} bytes (all strategies match)", scalar_out.len());
@@ -177,7 +254,8 @@ fn run_benchmark_suite(
 
 fn main() {
     println!("=== RustyCSV Encoding Benchmark ===");
-    println!("Strategies: Scalar (byte-by-byte), SWAR (8-byte Mycroft), SIMD (16/32-byte vectorized)");
+    println!("Strategies: Naive (Elixir-like), Scalar, SWAR (8-byte Mycroft), SIMD (16/32-byte vectorized)");
+    println!("Note: Naive simulates Elixir's per-field alloc pattern. Real Elixir is SLOWER due to GC/term overhead.");
 
     let warmup = 1.0;
     let time = 3.0;
