@@ -39,6 +39,9 @@ jobs:
           - { target: x86_64-pc-windows-gnu       , os: windows-2022 , variant: avx2 }
           - { target: x86_64-pc-windows-msvc      , os: windows-2022 , variant: avx2 }
 
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
