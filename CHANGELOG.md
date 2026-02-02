@@ -5,13 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-02-02
+
+Zero `unsafe` in application code. No user-facing API changes.
+
+### Changed
+
+- **Zero `unsafe` in application code** — all parsing, scanning, and term-building code is now fully safe Rust. The only remaining `unsafe` is the `GlobalAlloc` trait impl behind the opt-in `memory_tracking` feature flag (required by the trait).
+  - **Sub-binary creation (`term.rs`)**: Replaced hand-rolled `enif_make_sub_binary` FFI call with rustler's safe `Binary::make_subbinary().into()` API, enabled by upstream PR [#719](https://github.com/rusterlium/rustler/pull/719) (`#[inline]` on `make_subbinary_unchecked` + `From<Binary> for Term`)
+  - **SIMD quote detection (`simd_scanner.rs`)**: Removed `unsafe` CLMUL (x86_64) and PMULL (aarch64) `std::arch` intrinsics for prefix-XOR. All targets now use the portable shift-and-xor cascade — benchmarked with no measurable difference on 15MB/100K-row workloads
+- **rustler dependency** pinned to git master pending 0.37.3 hex release
+
 ## [0.3.4] - 2026-02-01
 
 Major internal refactor replacing all per-strategy byte-by-byte parsers with a shared single-pass SIMD structural scanner. No user-facing API changes.
 
 ### Changed
 
-- **SIMD structural scanner** — all six parsing strategies now share a single `scan_structural` pass that finds every unquoted separator and row ending in one sweep. Uses `std::simd` portable SIMD (128-bit, 256-bit on AVX2) with architecture-specific fast paths (CLMUL on x86_64, PMULL on aarch64). Requires Rust nightly (`#![feature(portable_simd)]`), but only uses the [stabilization-safe API subset](https://github.com/rust-lang/portable-simd/issues/364) — no swizzle, scatter/gather, or lane-count generics.
+- **SIMD structural scanner** — all six parsing strategies now share a single `scan_structural` pass that finds every unquoted separator and row ending in one sweep. Uses `std::simd` portable SIMD (128-bit on all targets, 256-bit on AVX2). Requires Rust nightly (`#![feature(portable_simd)]`), but only uses the [stabilization-safe API subset](https://github.com/rust-lang/portable-simd/issues/364) — no swizzle, scatter/gather, or lane-count generics.
 - **`:parallel` strategy overhauled** — phase 1 now uses the shared SIMD scan instead of a separate sequential row-boundary pass
 
 ### Performance

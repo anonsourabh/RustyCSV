@@ -85,7 +85,7 @@ File.stream!("huge.csv") |> CSV.parse_stream()   # Bounded memory
 
 ```elixir
 def deps do
-  [{:rusty_csv, "~> 0.3.4"}]
+  [{:rusty_csv, "~> 0.3.5"}]
 end
 ```
 
@@ -456,9 +456,9 @@ def project do
 end
 ```
 
-### Optional Memory Tracking
+### Optional Memory Tracking (Benchmarking Only)
 
-For profiling Rust memory usage, enable the `memory_tracking` feature:
+For profiling Rust-side memory during development and benchmarking. Not intended for production — it wraps every allocation with atomic counter updates, adding overhead. This is also the only source of `unsafe` in the codebase (required by the `GlobalAlloc` trait). Enable the `memory_tracking` feature:
 
 ```toml
 # In native/rustycsv/Cargo.toml
@@ -486,7 +486,7 @@ RustyCSV uses Rust's [`std::simd`](https://doc.rust-lang.org/std/simd/index.html
 
 We deliberately avoid the APIs that are [blocking stabilization](https://github.com/rust-lang/portable-simd/issues/364): swizzle, scatter/gather, and lane-count generics (`LaneCount<N>: SupportedLaneCount`). The items blocking the `portable_simd` [tracking issue](https://github.com/rust-lang/rust/issues/86656) — mask semantics, supported vector size limits, and swizzle design — are unrelated to the operations we use. When `std::simd` stabilizes, RustyCSV will work on stable Rust with no code changes.
 
-Architecture-specific intrinsics (CLMUL on x86_64, PMULL on aarch64) are used only for the prefix-XOR fast path and are accessed via `core::arch`, which is already stable.
+The prefix-XOR quote detection uses a portable shift-and-xor cascade rather than architecture-specific intrinsics, keeping the entire scanner free of `unsafe` code. Benchmarks show no measurable difference for the 16/32-bit masks used in CSV scanning.
 
 ## Development
 

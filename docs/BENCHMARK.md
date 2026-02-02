@@ -7,7 +7,7 @@ This document presents benchmark results comparing RustyCSV's parsing strategies
 - **Elixir**: 1.19.4
 - **OTP**: 28
 - **Hardware**: Apple Silicon M1 Pro (10 cores)
-- **RustyCSV**: 0.3.4
+- **RustyCSV**: 0.3.5
 - **NimbleCSV**: 1.3.0
 - **Test date**: February 1, 2026
 

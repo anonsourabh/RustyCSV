@@ -1,6 +1,5 @@
 // Shared term building utilities for converting Rust data to Elixir terms
 
-use rustler::sys::enif_make_sub_binary;
 use rustler::{Binary, Env, NewBinary, Term};
 use std::borrow::Cow;
 
@@ -53,32 +52,20 @@ pub fn cow_fields_to_term<'a>(env: Env<'a>, fields: Vec<Cow<'_, [u8]>>) -> Term<
 // Zero-Copy Sub-Binary Support
 // ============================================================================
 
-/// Create a sub-binary term referencing the original input (zero-copy)
-///
-/// # Safety
-/// The input binary must remain valid for the lifetime of the returned term.
-/// This is guaranteed when used within a NIF call since the input binary
-/// is owned by the calling process.
+/// Create a sub-binary term referencing the original input (zero-copy).
+/// Returns an empty binary if bounds are invalid (should never happen — indicates parser bug).
 #[inline]
-unsafe fn make_subbinary<'a>(
-    env: Env<'a>,
-    input_term: Term<'a>,
-    start: usize,
-    len: usize,
-    input_len: usize,
-) -> Term<'a> {
-    debug_assert!(
-        start.checked_add(len).is_some_and(|end| end <= input_len),
-        "make_subbinary out of bounds: start={start} len={len} input_len={input_len}"
-    );
-    // Release safety net: return empty binary rather than UB.
-    // This should never fire — callers validate bounds. If it does, it indicates
-    // a parser bug. The debug_assert above will catch it in dev/test builds.
-    if start.checked_add(len).is_none_or(|end| end > input_len) {
-        return NewBinary::new(env, 0).into();
-    }
-    let raw_term = enif_make_sub_binary(env.as_c_arg(), input_term.as_c_arg(), start, len);
-    Term::new(env, raw_term)
+fn make_subbinary<'a>(env: Env<'a>, input: &Binary<'a>, start: usize, len: usize) -> Term<'a> {
+    input
+        .make_subbinary(start, len)
+        .map(|b| b.into())
+        .unwrap_or_else(|_| {
+            debug_assert!(
+                false,
+                "make_subbinary out of bounds: start={start} len={len}"
+            );
+            NewBinary::new(env, 0).into()
+        })
 }
 
 pub(crate) use crate::core::unescape_field;
@@ -90,19 +77,17 @@ pub(crate) use crate::core::unescape_field;
 #[inline]
 fn field_to_term_hybrid<'a>(
     env: Env<'a>,
-    input_bytes: &[u8],
-    input_term: Term<'a>,
+    input: &Binary<'a>,
     start: usize,
     end: usize,
     escape: u8,
 ) -> Term<'a> {
     if start >= end {
-        // Empty field - create empty binary
         let binary = NewBinary::new(env, 0);
         return binary.into();
     }
 
-    let field = &input_bytes[start..end];
+    let field = &input.as_slice()[start..end];
 
     // Check if quoted
     if field.len() >= 2 && field[0] == escape && field[field.len() - 1] == escape {
@@ -116,20 +101,12 @@ fn field_to_term_hybrid<'a>(
             return binary.into();
         } else {
             // Quoted but no escapes: sub-binary of inner content
-            return unsafe {
-                make_subbinary(
-                    env,
-                    input_term,
-                    start + 1,
-                    end - start - 2,
-                    input_bytes.len(),
-                )
-            };
+            return make_subbinary(env, input, start + 1, end - start - 2);
         }
     }
 
     // Unquoted: direct sub-binary
-    unsafe { make_subbinary(env, input_term, start, end - start, input_bytes.len()) }
+    make_subbinary(env, input, start, end - start)
 }
 
 /// Convert field boundaries to Elixir terms using hybrid sub-binary/copy approach
@@ -140,14 +117,12 @@ pub fn boundaries_to_term_hybrid<'a>(
     boundaries: Vec<Vec<(usize, usize)>>,
     escape: u8,
 ) -> Term<'a> {
-    let input_bytes = input.as_slice();
-    let input_term = input.to_term(env);
     let mut list = Term::list_new_empty(env);
 
     for row in boundaries.into_iter().rev() {
         let mut row_list = Term::list_new_empty(env);
         for (start, end) in row.into_iter().rev() {
-            let field_term = field_to_term_hybrid(env, input_bytes, input_term, start, end, escape);
+            let field_term = field_to_term_hybrid(env, &input, start, end, escape);
             row_list = row_list.list_prepend(field_term);
         }
         list = list.list_prepend(row_list);
@@ -169,8 +144,7 @@ use crate::strategy::{contains_escape, unescape_field_general};
 #[inline]
 fn field_to_term_hybrid_general<'a>(
     env: Env<'a>,
-    input_bytes: &[u8],
-    input_term: Term<'a>,
+    input: &Binary<'a>,
     start: usize,
     end: usize,
     escape: &[u8],
@@ -180,7 +154,7 @@ fn field_to_term_hybrid_general<'a>(
         return binary.into();
     }
 
-    let field = &input_bytes[start..end];
+    let field = &input.as_slice()[start..end];
     let esc_len = escape.len();
 
     // Check if quoted (starts and ends with escape)
@@ -198,20 +172,12 @@ fn field_to_term_hybrid_general<'a>(
             return binary.into();
         } else {
             // Quoted but no escapes: sub-binary of inner content
-            return unsafe {
-                make_subbinary(
-                    env,
-                    input_term,
-                    start + esc_len,
-                    end - start - 2 * esc_len,
-                    input_bytes.len(),
-                )
-            };
+            return make_subbinary(env, input, start + esc_len, end - start - 2 * esc_len);
         }
     }
 
     // Unquoted: direct sub-binary
-    unsafe { make_subbinary(env, input_term, start, end - start, input_bytes.len()) }
+    make_subbinary(env, input, start, end - start)
 }
 
 /// Convert field boundaries to Elixir terms with multi-byte escape support
@@ -221,15 +187,12 @@ pub fn boundaries_to_term_hybrid_general<'a>(
     boundaries: Vec<Vec<(usize, usize)>>,
     escape: &[u8],
 ) -> Term<'a> {
-    let input_bytes = input.as_slice();
-    let input_term = input.to_term(env);
     let mut list = Term::list_new_empty(env);
 
     for row in boundaries.into_iter().rev() {
         let mut row_list = Term::list_new_empty(env);
         for (start, end) in row.into_iter().rev() {
-            let field_term =
-                field_to_term_hybrid_general(env, input_bytes, input_term, start, end, escape);
+            let field_term = field_to_term_hybrid_general(env, &input, start, end, escape);
             row_list = row_list.list_prepend(field_term);
         }
         list = list.list_prepend(row_list);
@@ -328,8 +291,6 @@ pub fn boundaries_to_maps_hybrid<'a>(
     boundaries: &[Vec<(usize, usize)>],
     escape: u8,
 ) -> Term<'a> {
-    let input_bytes = input.as_slice();
-    let input_term = input.to_term(env);
     rows_to_maps_inner(
         env,
         keys,
@@ -337,7 +298,7 @@ pub fn boundaries_to_maps_hybrid<'a>(
         |row| row.len(),
         |env, row, i| {
             let (start, end) = row[i];
-            field_to_term_hybrid(env, input_bytes, input_term, start, end, escape)
+            field_to_term_hybrid(env, &input, start, end, escape)
         },
     )
 }
@@ -350,8 +311,6 @@ pub fn boundaries_to_maps_hybrid_general<'a>(
     boundaries: &[Vec<(usize, usize)>],
     escape: &[u8],
 ) -> Term<'a> {
-    let input_bytes = input.as_slice();
-    let input_term = input.to_term(env);
     rows_to_maps_inner(
         env,
         keys,
@@ -359,7 +318,7 @@ pub fn boundaries_to_maps_hybrid_general<'a>(
         |row| row.len(),
         |env, row, i| {
             let (start, end) = row[i];
-            field_to_term_hybrid_general(env, input_bytes, input_term, start, end, escape)
+            field_to_term_hybrid_general(env, &input, start, end, escape)
         },
     )
 }

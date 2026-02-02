@@ -43,10 +43,14 @@ const WIDE: usize = 32;
 // prefix_xor(mask) produces a bitmask where bit i is set if position i is
 // inside a quoted region (odd number of quotes before it).
 
-/// Portable prefix-XOR via shift-and-xor cascade (works for 16 and 32 bits
+/// Prefix-XOR via shift-and-xor cascade (works for 16 and 32 bits
 /// within a u64, since upper bits are zero).
+///
+/// For these small bit widths the cascade is 6 dependent XOR+shift ops (~6 cycles),
+/// comparable to a single CLMUL/PMULL instruction (~3-4 cycle latency + setup).
+/// Using the portable version keeps the scanner free of `unsafe`.
 #[inline]
-fn prefix_xor_portable(mut x: u64) -> u64 {
+fn prefix_xor(mut x: u64) -> u64 {
     x ^= x << 1;
     x ^= x << 2;
     x ^= x << 4;
@@ -54,54 +58,6 @@ fn prefix_xor_portable(mut x: u64) -> u64 {
     x ^= x << 16;
     x ^= x << 32;
     x
-}
-
-// ---------------------------------------------------------------------------
-// x86_64 CLMUL fast path
-// ---------------------------------------------------------------------------
-
-#[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
-#[inline]
-fn prefix_xor_clmul(x: u64) -> u64 {
-    unsafe {
-        use std::arch::x86_64::{_mm_clmulepi64_si128, _mm_cvtsi128_si64, _mm_set_epi64x};
-        let input = _mm_set_epi64x(0, x as i64);
-        let all_ones = _mm_set_epi64x(0, -1i64);
-        let result = _mm_clmulepi64_si128(input, all_ones, 0);
-        _mm_cvtsi128_si64(result) as u64
-    }
-}
-
-// ---------------------------------------------------------------------------
-// aarch64 PMULL fast path
-// ---------------------------------------------------------------------------
-
-#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
-#[inline]
-fn prefix_xor_pmull(x: u64) -> u64 {
-    unsafe {
-        use std::arch::aarch64::{vgetq_lane_u64, vmull_p64, vreinterpretq_u64_p128};
-        let result = vmull_p64(x, u64::MAX);
-        vgetq_lane_u64(vreinterpretq_u64_p128(result), 0)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Dispatch: pick fastest prefix-XOR for the target
-// ---------------------------------------------------------------------------
-
-#[inline]
-fn prefix_xor(x: u64) -> u64 {
-    #[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
-    {
-        return prefix_xor_clmul(x);
-    }
-    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
-    {
-        return prefix_xor_pmull(x);
-    }
-    #[allow(unreachable_code)]
-    prefix_xor_portable(x)
 }
 
 // ---------------------------------------------------------------------------
@@ -463,19 +419,9 @@ mod tests {
         for &mask in test_masks {
             let expected = prefix_xor_reference(mask, 16);
             assert_eq!(
-                prefix_xor_portable(mask) & 0xFFFF,
-                expected,
-                "prefix_xor_portable wrong for mask {mask:#018b}"
-            );
-        }
-
-        // Verify dispatch (CLMUL/PMULL/portable) agrees with reference
-        for &mask in test_masks {
-            let expected = prefix_xor_reference(mask, 16);
-            assert_eq!(
                 prefix_xor(mask) & 0xFFFF,
                 expected,
-                "prefix_xor dispatch wrong for mask {mask:#018b}"
+                "prefix_xor wrong for mask {mask:#018b}"
             );
         }
 

@@ -210,9 +210,9 @@ All batch strategies share a single-pass SIMD structural scanner (`scan_structur
 4. Mask out quoted positions, then extract the remaining separator and newline positions into `Vec<u32>` arrays
 5. A `quote_carry` bit tracks quote parity across chunk boundaries
 
-The prefix-XOR uses carryless multiply intrinsics where available (CLMUL on x86_64, PMULL on aarch64) with a portable shift-and-xor fallback.
+The prefix-XOR uses a portable shift-and-xor cascade on all targets (6 XOR+shift ops on a u64). Architecture-specific intrinsics (CLMUL, PMULL) were evaluated but removed — benchmarks showed no measurable difference for the 16/32-bit masks used in CSV scanning, and removing them keeps the entire scanner free of `unsafe` code.
 
-**`std::simd` API surface:** The scanner uses only the stabilization-safe subset of `portable_simd`: `Simd::from_slice`, `splat`, `simd_eq`, `to_bitmask`, and bitwise ops. It avoids the APIs [blocking stabilization](https://github.com/rust-lang/portable-simd/issues/364) (swizzle, scatter/gather, lane-count generics). The architecture-specific intrinsics (CLMUL, PMULL) are accessed via `core::arch`, which is already stable.
+**`std::simd` API surface:** The scanner uses only the stabilization-safe subset of `portable_simd`: `Simd::from_slice`, `splat`, `simd_eq`, `to_bitmask`, and bitwise ops. It avoids the APIs [blocking stabilization](https://github.com/rust-lang/portable-simd/issues/364) (swizzle, scatter/gather, lane-count generics). No `std::arch` intrinsics are used.
 
 **Output — `StructuralIndex`:**
 
@@ -306,8 +306,8 @@ The SIMD structural scanner already finds every separator position. Three approa
 Returns BEAM sub-binary references instead of copying data:
 
 ```rust
-fn field_to_term_hybrid(env, input_term, start, end, escape) -> Term {
-    let field = &input_bytes[start..end];
+fn field_to_term_hybrid(env, input: &Binary, start, end, escape) -> Term {
+    let field = &input.as_slice()[start..end];
 
     // Check if quoted with escapes
     if needs_unescaping(field) {
@@ -315,8 +315,8 @@ fn field_to_term_hybrid(env, input_term, start, end, escape) -> Term {
         return copy_and_unescape(field);
     }
 
-    // Zero-copy: create sub-binary reference
-    unsafe { enif_make_sub_binary(env, input_term, start, len) }
+    // Zero-copy: create sub-binary reference (safe API)
+    input.make_subbinary(start, len).unwrap().into()
 }
 ```
 
@@ -375,9 +375,9 @@ To disable mimalloc (for exotic build targets):
 rusty_csv = { version = "0.1", default-features = false }
 ```
 
-### Optional Memory Tracking
+### Optional Memory Tracking (Benchmarking Only)
 
-For profiling, enable the `memory_tracking` feature in `native/rustycsv/Cargo.toml`:
+For profiling Rust-side memory during development and benchmarking, enable the `memory_tracking` feature in `native/rustycsv/Cargo.toml`. This is not intended for production — it wraps every allocation/deallocation with atomic counter updates, adding overhead. It is also the only source of `unsafe` in the codebase (required by the `GlobalAlloc` trait).
 
 ```toml
 [features]
@@ -449,9 +449,11 @@ remain on the normal scheduler.
 
 ### Memory Safety
 
+All application code is **zero `unsafe`**. The only `unsafe` in the codebase is the `GlobalAlloc` trait impl behind the opt-in `memory_tracking` feature flag — this is a development-only benchmarking tool for profiling Rust-side allocations, not intended for production use. The `unsafe` is required by the `GlobalAlloc` trait definition and cannot be avoided. It is disabled by default and adds measurable overhead when enabled.
+
 - Copy-based strategies copy data to BEAM terms, then free Rust memory
-- Zero-copy strategy creates sub-binary references with bounds-checked offsets
-  (`debug_assert!` in dev, empty-binary fallback in release)
+- Zero-copy strategy creates sub-binary references via rustler's safe `Binary::make_subbinary` API (bounds-checked, returns `NifResult`)
+- SIMD scanner uses `std::simd` portable SIMD with no `std::arch` intrinsics
 - Streaming parser uses `ResourceArc` with proper cleanup
 - Streaming buffer is capped at 256 MB by default (configurable via `:max_buffer_size`)
 - Mutex poisoning on streaming resources raises `:mutex_poisoned` instead of panicking
