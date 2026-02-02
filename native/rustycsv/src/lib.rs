@@ -133,13 +133,15 @@ fn lock_parser(
 }
 
 use strategy::{
-    contains_escape, parse_csv, parse_csv_boundaries_general,
-    parse_csv_boundaries_general_with_newlines, parse_csv_boundaries_multi_sep,
-    parse_csv_boundaries_with_config, parse_csv_fast, parse_csv_fast_multi_sep,
-    parse_csv_fast_with_config, parse_csv_general, parse_csv_general_with_newlines,
-    parse_csv_indexed, parse_csv_indexed_general, parse_csv_indexed_general_with_newlines,
-    parse_csv_indexed_multi_sep, parse_csv_indexed_with_config, parse_csv_multi_sep,
-    parse_csv_parallel, parse_csv_parallel_general, parse_csv_parallel_general_with_newlines,
+    contains_escape, encode_csv_general, encode_csv_scalar, encode_csv_scalar_multi_sep,
+    encode_csv_simd, encode_csv_simd_multi_sep, encode_csv_swar, encode_csv_swar_multi_sep,
+    parse_csv, parse_csv_boundaries_general, parse_csv_boundaries_general_with_newlines,
+    parse_csv_boundaries_multi_sep, parse_csv_boundaries_with_config, parse_csv_fast,
+    parse_csv_fast_multi_sep, parse_csv_fast_with_config, parse_csv_general,
+    parse_csv_general_with_newlines, parse_csv_indexed, parse_csv_indexed_general,
+    parse_csv_indexed_general_with_newlines, parse_csv_indexed_multi_sep,
+    parse_csv_indexed_with_config, parse_csv_multi_sep, parse_csv_parallel,
+    parse_csv_parallel_general, parse_csv_parallel_general_with_newlines,
     parse_csv_parallel_multi_sep, parse_csv_parallel_with_config, parse_csv_with_config,
     unescape_field_general,
 };
@@ -994,6 +996,165 @@ fn parse_to_maps_parallel<'a>(
             Ok(owned_rows_to_maps(env, &key_terms, &all_rows[start..]))
         }
     }
+}
+
+// ============================================================================
+// Encoding NIFs
+// ============================================================================
+
+/// Helper: decode a list of rows (list of lists of binaries) from an Elixir term.
+/// Returns a nested Vec structure that borrows from the input binaries.
+fn decode_rows<'a>(term: Term<'a>) -> NifResult<Vec<Vec<Binary<'a>>>> {
+    let row_list: Vec<Term<'a>> = term.decode().map_err(|_| Error::BadArg)?;
+    let mut rows = Vec::with_capacity(row_list.len());
+    for row_term in row_list {
+        let fields: Vec<Binary<'a>> = row_term.decode().map_err(|_| Error::BadArg)?;
+        rows.push(fields);
+    }
+    Ok(rows)
+}
+
+/// Decode line_separator from a Term. Accepts binary or atom :default → "\n"
+fn decode_line_separator<'a>(term: Term<'a>) -> NifResult<Vec<u8>> {
+    if let Ok(s) = term.atom_to_string() {
+        if s == "default" {
+            return Ok(b"\n".to_vec());
+        }
+        return Err(Error::BadArg);
+    }
+    if let Ok(binary) = term.decode::<Binary<'a>>() {
+        return Ok(binary.as_slice().to_vec());
+    }
+    Err(Error::BadArg)
+}
+
+/// Encode rows to CSV using scalar strategy (byte-by-byte scanning).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn encode_string_scalar<'a>(
+    env: Env<'a>,
+    rows_term: Term<'a>,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
+    line_sep_term: Term<'a>,
+) -> NifResult<Term<'a>> {
+    let decoded_rows = decode_rows(rows_term)?;
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
+    let line_separator = decode_line_separator(line_sep_term)?;
+
+    // Build field references for the encoder
+    let row_fields: Vec<Vec<&[u8]>> = decoded_rows
+        .iter()
+        .map(|row| row.iter().map(|f| f.as_slice()).collect())
+        .collect();
+    let row_slices: Vec<&[&[u8]]> = row_fields.iter().map(|r| r.as_slice()).collect();
+
+    let output = if is_all_single_byte(&separators, &escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(&separators);
+        if sep_bytes.len() == 1 {
+            encode_csv_scalar(&row_slices, sep_bytes[0], esc, &line_separator)
+        } else {
+            encode_csv_scalar_multi_sep(&row_slices, &sep_bytes, esc, &line_separator)
+        }
+    } else {
+        encode_csv_general(
+            &row_slices,
+            &separators.patterns[0],
+            &escape.bytes,
+            &line_separator,
+        )
+    };
+
+    let mut binary = NewBinary::new(env, output.len());
+    binary.as_mut_slice().copy_from_slice(&output);
+    Ok(binary.into())
+}
+
+/// Encode rows to CSV using SWAR strategy (8 bytes at a time via Mycroft's trick).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn encode_string_swar<'a>(
+    env: Env<'a>,
+    rows_term: Term<'a>,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
+    line_sep_term: Term<'a>,
+) -> NifResult<Term<'a>> {
+    let decoded_rows = decode_rows(rows_term)?;
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
+    let line_separator = decode_line_separator(line_sep_term)?;
+
+    let row_fields: Vec<Vec<&[u8]>> = decoded_rows
+        .iter()
+        .map(|row| row.iter().map(|f| f.as_slice()).collect())
+        .collect();
+    let row_slices: Vec<&[&[u8]]> = row_fields.iter().map(|r| r.as_slice()).collect();
+
+    let output = if is_all_single_byte(&separators, &escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(&separators);
+        if sep_bytes.len() == 1 {
+            encode_csv_swar(&row_slices, sep_bytes[0], esc, &line_separator)
+        } else {
+            encode_csv_swar_multi_sep(&row_slices, &sep_bytes, esc, &line_separator)
+        }
+    } else {
+        // Fall back to general (scalar) for multi-byte
+        encode_csv_general(
+            &row_slices,
+            &separators.patterns[0],
+            &escape.bytes,
+            &line_separator,
+        )
+    };
+
+    let mut binary = NewBinary::new(env, output.len());
+    binary.as_mut_slice().copy_from_slice(&output);
+    Ok(binary.into())
+}
+
+/// Encode rows to CSV using SIMD strategy (16/32-byte vectorized scanning).
+#[rustler::nif(schedule = "DirtyCpu")]
+fn encode_string_simd<'a>(
+    env: Env<'a>,
+    rows_term: Term<'a>,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
+    line_sep_term: Term<'a>,
+) -> NifResult<Term<'a>> {
+    let decoded_rows = decode_rows(rows_term)?;
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
+    let line_separator = decode_line_separator(line_sep_term)?;
+
+    let row_fields: Vec<Vec<&[u8]>> = decoded_rows
+        .iter()
+        .map(|row| row.iter().map(|f| f.as_slice()).collect())
+        .collect();
+    let row_slices: Vec<&[&[u8]]> = row_fields.iter().map(|r| r.as_slice()).collect();
+
+    let output = if is_all_single_byte(&separators, &escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(&separators);
+        if sep_bytes.len() == 1 {
+            encode_csv_simd(&row_slices, sep_bytes[0], esc, &line_separator)
+        } else {
+            encode_csv_simd_multi_sep(&row_slices, &sep_bytes, esc, &line_separator)
+        }
+    } else {
+        // Fall back to general (scalar) for multi-byte
+        encode_csv_general(
+            &row_slices,
+            &separators.patterns[0],
+            &escape.bytes,
+            &line_separator,
+        )
+    };
+
+    let mut binary = NewBinary::new(env, output.len());
+    binary.as_mut_slice().copy_from_slice(&output);
+    Ok(binary.into())
 }
 
 // ============================================================================

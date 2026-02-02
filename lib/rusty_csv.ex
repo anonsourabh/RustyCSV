@@ -1126,29 +1126,99 @@ defmodule RustyCSV do
     encoded_line_separator =
       :unicode.characters_to_binary(config.line_separator, :utf8, config.encoding)
 
+    # Determine if NIF encoding is possible (UTF-8, no escape_formula)
+    nif_encoding_available =
+      config.encoding == :utf8 and config.escape_formula == nil
+
     quote do
       # Pre-encoded delimiters for dumping
       @encoded_separator unquote(Macro.escape(encoded_separator))
       @encoded_escape unquote(Macro.escape(encoded_escape))
       @encoded_line_separator unquote(Macro.escape(encoded_line_separator))
+      @nif_encoding_available unquote(nif_encoding_available)
 
       @doc """
       Converts an enumerable of rows to iodata in CSV format.
+
+      ## Options
+
+        * `:encode_strategy` - Encoding strategy to use. Options:
+          * `:simd` — SIMD-accelerated scanning (default when NIF available)
+          * `:swar` — SWAR 8-byte scanning (no special hardware needed)
+          * `:scalar` — Byte-by-byte scanning (baseline)
+          * `:elixir` — Pure Elixir encoding (original implementation)
+
+        NIF encoding strategies (`:simd`, `:swar`, `:scalar`) are only available
+        for UTF-8 modules without `escape_formula`. Other configurations
+        automatically fall back to `:elixir`.
       """
       @impl RustyCSV
-      @spec dump_to_iodata(Enumerable.t()) :: iodata()
-      def dump_to_iodata(enumerable) do
-        iodata = Enum.map(enumerable, &dump_row/1)
+      @spec dump_to_iodata(Enumerable.t(), keyword()) :: iodata()
+      def dump_to_iodata(enumerable, opts \\ []) do
+        encode_strategy = Keyword.get(opts, :encode_strategy, :simd)
 
-        if @dump_bom do
-          [@bom | iodata]
+        if @nif_encoding_available and encode_strategy != :elixir do
+          # Collect rows to a list for the NIF
+          rows = Enum.to_list(enumerable)
+
+          # Ensure all fields are binaries
+          rows =
+            Enum.map(rows, fn row ->
+              Enum.map(row, fn
+                field when is_binary(field) -> field
+                field -> to_string(field)
+              end)
+            end)
+
+          result =
+            case encode_strategy do
+              :scalar ->
+                RustyCSV.Native.encode_string_scalar(
+                  rows,
+                  @separator_binaries,
+                  @escape_binary,
+                  @line_separator
+                )
+
+              :swar ->
+                RustyCSV.Native.encode_string_swar(
+                  rows,
+                  @separator_binaries,
+                  @escape_binary,
+                  @line_separator
+                )
+
+              _ ->
+                RustyCSV.Native.encode_string_simd(
+                  rows,
+                  @separator_binaries,
+                  @escape_binary,
+                  @line_separator
+                )
+            end
+
+          if @dump_bom do
+            [@bom, result]
+          else
+            result
+          end
         else
-          iodata
+          # Pure Elixir fallback
+          iodata = Enum.map(enumerable, &dump_row/1)
+
+          if @dump_bom do
+            [@bom | iodata]
+          else
+            iodata
+          end
         end
       end
 
       @doc """
       Lazily converts an enumerable of rows to a stream of iodata.
+
+      Note: This always uses the pure Elixir encoding path since it processes
+      rows one at a time (NIF batching wouldn't help).
       """
       @impl RustyCSV
       @spec dump_to_stream(Enumerable.t()) :: Enumerable.t()
