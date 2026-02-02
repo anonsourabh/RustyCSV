@@ -179,7 +179,13 @@ pub fn encode_csv_scalar(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    encode_csv_rows(rows, separator, escape, line_separator, field_needs_quoting_scalar)
+    encode_csv_rows(
+        rows,
+        separator,
+        escape,
+        line_separator,
+        field_needs_quoting_scalar,
+    )
 }
 
 /// Encode rows to CSV using scalar scanning, multi-separator variant.
@@ -189,7 +195,13 @@ pub fn encode_csv_scalar_multi_sep(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    encode_csv_rows_multi_sep(rows, separators, escape, line_separator, field_needs_quoting_scalar_multi_sep)
+    encode_csv_rows_multi_sep(
+        rows,
+        separators,
+        escape,
+        line_separator,
+        field_needs_quoting_scalar_multi_sep,
+    )
 }
 
 // ==========================================================================
@@ -358,7 +370,13 @@ pub fn encode_csv_swar(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    encode_csv_rows(rows, separator, escape, line_separator, field_needs_quoting_swar)
+    encode_csv_rows(
+        rows,
+        separator,
+        escape,
+        line_separator,
+        field_needs_quoting_swar,
+    )
 }
 
 /// Encode rows to CSV using SWAR scanning, multi-separator variant.
@@ -368,7 +386,13 @@ pub fn encode_csv_swar_multi_sep(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    encode_csv_rows_multi_sep(rows, separators, escape, line_separator, field_needs_quoting_swar_multi_sep)
+    encode_csv_rows_multi_sep(
+        rows,
+        separators,
+        escape,
+        line_separator,
+        field_needs_quoting_swar_multi_sep,
+    )
 }
 
 // ==========================================================================
@@ -453,11 +477,10 @@ fn field_needs_quoting_simd_multi_sep(field: &[u8], separators: &[u8], escape: u
 
         while pos + WIDE <= len {
             let chunk = Simd::<u8, WIDE>::from_slice(&field[pos..pos + WIDE]);
-            let mut hits = chunk.simd_eq(esc_splat)
-                | chunk.simd_eq(lf_splat)
-                | chunk.simd_eq(cr_splat);
+            let mut hits =
+                chunk.simd_eq(esc_splat) | chunk.simd_eq(lf_splat) | chunk.simd_eq(cr_splat);
             for splat in &sep_splats {
-                hits = hits | chunk.simd_eq(*splat);
+                hits |= chunk.simd_eq(*splat);
             }
             if hits.any() {
                 return true;
@@ -478,11 +501,10 @@ fn field_needs_quoting_simd_multi_sep(field: &[u8], separators: &[u8], escape: u
 
         while pos + CHUNK <= len {
             let chunk = Simd::<u8, CHUNK>::from_slice(&field[pos..pos + CHUNK]);
-            let mut hits = chunk.simd_eq(esc_splat)
-                | chunk.simd_eq(lf_splat)
-                | chunk.simd_eq(cr_splat);
+            let mut hits =
+                chunk.simd_eq(esc_splat) | chunk.simd_eq(lf_splat) | chunk.simd_eq(cr_splat);
             for splat in &sep_splats {
-                hits = hits | chunk.simd_eq(*splat);
+                hits |= chunk.simd_eq(*splat);
             }
             if hits.any() {
                 return true;
@@ -510,7 +532,13 @@ pub fn encode_csv_simd(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    encode_csv_rows(rows, separator, escape, line_separator, field_needs_quoting_simd)
+    encode_csv_rows(
+        rows,
+        separator,
+        escape,
+        line_separator,
+        field_needs_quoting_simd,
+    )
 }
 
 /// Encode rows to CSV using SIMD scanning, multi-separator variant.
@@ -520,7 +548,13 @@ pub fn encode_csv_simd_multi_sep(
     escape: u8,
     line_separator: &[u8],
 ) -> Vec<u8> {
-    encode_csv_rows_multi_sep(rows, separators, escape, line_separator, field_needs_quoting_simd_multi_sep)
+    encode_csv_rows_multi_sep(
+        rows,
+        separators,
+        escape,
+        line_separator,
+        field_needs_quoting_simd_multi_sep,
+    )
 }
 
 // ==========================================================================
@@ -646,16 +680,8 @@ mod tests {
         assert!(!field_needs_quoting_swar(b"abc", b',', b'"'));
 
         // Long field (>= 8 bytes) — SWAR path
-        assert!(field_needs_quoting_swar(
-            b"abcdefghij,klm",
-            b',',
-            b'"'
-        ));
-        assert!(!field_needs_quoting_swar(
-            b"abcdefghijklmno",
-            b',',
-            b'"'
-        ));
+        assert!(field_needs_quoting_swar(b"abcdefghij,klm", b',', b'"'));
+        assert!(!field_needs_quoting_swar(b"abcdefghijklmno", b',', b'"'));
     }
 
     #[test]

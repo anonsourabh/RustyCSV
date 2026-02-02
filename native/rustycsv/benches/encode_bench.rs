@@ -12,9 +12,7 @@
 use std::time::{Duration, Instant};
 
 // Import the encode module from the library
-use rustycsv::strategy::encode::{
-    encode_csv_scalar, encode_csv_simd, encode_csv_swar,
-};
+use rustycsv::strategy::encode::{encode_csv_scalar, encode_csv_simd, encode_csv_swar};
 
 // ==========================================================================
 // "Elixir-style" naive encoder — simulates what the BEAM does
@@ -104,14 +102,12 @@ fn generate_mixed_rows(num_rows: usize, fields_per_row: usize) -> Vec<Vec<Vec<u8
     (0..num_rows)
         .map(|i| {
             (0..fields_per_row)
-                .map(|j| {
-                    match j % 5 {
-                        0 => format!("plain_value_{}", i).into_bytes(),
-                        1 => format!("has,comma_{}", i).into_bytes(),
-                        2 => format!("has\"quote_{}", i).into_bytes(),
-                        3 => format!("has\nnewline_{}", i).into_bytes(),
-                        _ => format!("normal_field_{}_{}", i, j).into_bytes(),
-                    }
+                .map(|j| match j % 5 {
+                    0 => format!("plain_value_{}", i).into_bytes(),
+                    1 => format!("has,comma_{}", i).into_bytes(),
+                    2 => format!("has\"quote_{}", i).into_bytes(),
+                    3 => format!("has\nnewline_{}", i).into_bytes(),
+                    _ => format!("normal_field_{}_{}", i, j).into_bytes(),
                 })
                 .collect()
         })
@@ -157,7 +153,12 @@ impl BenchResult {
     }
 }
 
-fn bench_fn<F: Fn() -> Vec<u8>>(name: &str, f: F, warmup_secs: f64, bench_secs: f64) -> BenchResult {
+fn bench_fn<F: Fn() -> Vec<u8>>(
+    name: &str,
+    f: F,
+    warmup_secs: f64,
+    bench_secs: f64,
+) -> BenchResult {
     // Warmup
     let warmup_deadline = Instant::now() + Duration::from_secs_f64(warmup_secs);
     let mut output_size = 0;
@@ -188,15 +189,16 @@ fn print_results(results: &[BenchResult]) {
     let max_name_len = results.iter().map(|r| r.name.len()).max().unwrap_or(0);
 
     // Find fastest for comparison
-    let fastest_ns = results
-        .iter()
-        .map(|r| r.avg_ns())
-        .fold(f64::MAX, f64::min);
+    let fastest_ns = results.iter().map(|r| r.avg_ns()).fold(f64::MAX, f64::min);
 
     for r in results {
         let avg = r.avg_ns();
         let speedup = avg / fastest_ns;
-        let marker = if (speedup - 1.0).abs() < 0.01 { " (fastest)" } else { "" };
+        let marker = if (speedup - 1.0).abs() < 0.01 {
+            " (fastest)"
+        } else {
+            ""
+        };
         println!(
             "  {:<width$}  {:>10.2} µs/iter  {:>8.1} MB/s  {:>6.2}x{}",
             r.name,
@@ -209,12 +211,7 @@ fn print_results(results: &[BenchResult]) {
     }
 }
 
-fn run_benchmark_suite(
-    label: &str,
-    rows_owned: &[Vec<Vec<u8>>],
-    warmup: f64,
-    time: f64,
-) {
+fn run_benchmark_suite(label: &str, rows_owned: &[Vec<Vec<u8>>], warmup: f64, time: f64) {
     // Convert owned data to slice references matching the encode API
     let row_fields: Vec<Vec<&[u8]>> = rows_owned
         .iter()
@@ -225,18 +222,30 @@ fn run_benchmark_suite(
     println!("\n--- {} ---", label);
 
     let results = vec![
-        bench_fn("Naive (Elixir-like)", || {
-            encode_csv_naive(&row_slices, b',', b'"', b"\n")
-        }, warmup, time),
-        bench_fn("Scalar", || {
-            encode_csv_scalar(&row_slices, b',', b'"', b"\n")
-        }, warmup, time),
-        bench_fn("SWAR", || {
-            encode_csv_swar(&row_slices, b',', b'"', b"\n")
-        }, warmup, time),
-        bench_fn("SIMD", || {
-            encode_csv_simd(&row_slices, b',', b'"', b"\n")
-        }, warmup, time),
+        bench_fn(
+            "Naive (Elixir-like)",
+            || encode_csv_naive(&row_slices, b',', b'"', b"\n"),
+            warmup,
+            time,
+        ),
+        bench_fn(
+            "Scalar",
+            || encode_csv_scalar(&row_slices, b',', b'"', b"\n"),
+            warmup,
+            time,
+        ),
+        bench_fn(
+            "SWAR",
+            || encode_csv_swar(&row_slices, b',', b'"', b"\n"),
+            warmup,
+            time,
+        ),
+        bench_fn(
+            "SIMD",
+            || encode_csv_simd(&row_slices, b',', b'"', b"\n"),
+            warmup,
+            time,
+        ),
     ];
 
     // Verify all produce identical output
@@ -247,7 +256,10 @@ fn run_benchmark_suite(
     assert_eq!(naive_out, scalar_out, "Scalar output differs from naive!");
     assert_eq!(scalar_out, swar_out, "SWAR output differs from scalar!");
     assert_eq!(scalar_out, simd_out, "SIMD output differs from scalar!");
-    println!("  Output: {} bytes (all strategies match)", scalar_out.len());
+    println!(
+        "  Output: {} bytes (all strategies match)",
+        scalar_out.len()
+    );
 
     print_results(&results);
 }
@@ -262,27 +274,57 @@ fn main() {
 
     // 1K rows, clean
     let rows = generate_clean_rows(1_000, 10);
-    run_benchmark_suite("1K rows x 10 fields (clean, no quoting)", &rows, warmup, time);
+    run_benchmark_suite(
+        "1K rows x 10 fields (clean, no quoting)",
+        &rows,
+        warmup,
+        time,
+    );
 
     // 10K rows, clean
     let rows = generate_clean_rows(10_000, 10);
-    run_benchmark_suite("10K rows x 10 fields (clean, no quoting)", &rows, warmup, time);
+    run_benchmark_suite(
+        "10K rows x 10 fields (clean, no quoting)",
+        &rows,
+        warmup,
+        time,
+    );
 
     // 10K rows, mixed (quoting needed)
     let rows = generate_mixed_rows(10_000, 10);
-    run_benchmark_suite("10K rows x 10 fields (mixed, with quoting)", &rows, warmup, time);
+    run_benchmark_suite(
+        "10K rows x 10 fields (mixed, with quoting)",
+        &rows,
+        warmup,
+        time,
+    );
 
     // 100K rows, clean
     let rows = generate_clean_rows(100_000, 10);
-    run_benchmark_suite("100K rows x 10 fields (clean, no quoting)", &rows, warmup, time);
+    run_benchmark_suite(
+        "100K rows x 10 fields (clean, no quoting)",
+        &rows,
+        warmup,
+        time,
+    );
 
     // 100K rows, mixed
     let rows = generate_mixed_rows(100_000, 10);
-    run_benchmark_suite("100K rows x 10 fields (mixed, with quoting)", &rows, warmup, time);
+    run_benchmark_suite(
+        "100K rows x 10 fields (mixed, with quoting)",
+        &rows,
+        warmup,
+        time,
+    );
 
     // 10K rows, long fields (exercise SIMD more)
     let rows = generate_long_field_rows(10_000);
-    run_benchmark_suite("10K rows x 3 long fields (50-200 bytes each)", &rows, warmup, time);
+    run_benchmark_suite(
+        "10K rows x 3 long fields (50-200 bytes each)",
+        &rows,
+        warmup,
+        time,
+    );
 
     println!("\n=== Done ===");
 }

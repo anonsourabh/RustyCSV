@@ -35,7 +35,6 @@ pub const CHUNK: usize = 16;
 #[cfg(target_feature = "avx2")]
 pub const WIDE: usize = 32;
 
-
 // ---------------------------------------------------------------------------
 // Prefix-XOR: compute cumulative XOR to determine quoted regions
 // ---------------------------------------------------------------------------
