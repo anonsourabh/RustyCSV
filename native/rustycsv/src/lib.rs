@@ -915,6 +915,25 @@ fn decode_encoding_target(term: Term) -> NifResult<EncodingTarget> {
     }
 }
 
+/// Decode reserved characters from an Erlang list of single-byte binaries.
+/// Returns a Vec<u8> of bytes that should trigger quoting.
+fn decode_reserved<'a>(term: Term<'a>) -> NifResult<Vec<u8>> {
+    let list: ListIterator<'a> = term.decode().map_err(|_| Error::BadArg)?;
+    let mut reserved = Vec::new();
+    for item in list {
+        let bin: Binary<'a> = item.decode().map_err(|_| Error::BadArg)?;
+        let bytes = bin.as_slice();
+        // Each reserved entry should be a single byte
+        if bytes.len() == 1 {
+            reserved.push(bytes[0]);
+        } else {
+            // Multi-byte reserved patterns: add all bytes individually
+            reserved.extend_from_slice(bytes);
+        }
+    }
+    Ok(reserved)
+}
+
 /// Post-processing mode for encoding. Determines what extra work is needed
 /// beyond basic CSV field quoting.
 enum PostProcess {
@@ -939,23 +958,22 @@ impl PostProcess {
     }
 }
 
-/// Encode rows to CSV, returning flat iodata (a single Erlang list).
+/// Encode rows to CSV, returning iodata wrapping a single flat binary.
 ///
-/// Architecture: builds one flat iolist `[f1, sep, f2, nl, f3, sep, f4, nl, ...]`
-/// using a single `Vec<Term>` for all elements across all rows. This eliminates:
-/// - Per-row Vec allocations (was N allocations, now 1)
-/// - Nested row sublists (was N inner lists + 1 outer, now 1 flat list)
-/// - Per-row list_new_empty + list_prepend overhead
+/// Architecture: writes all output into a single Vec<u8> buffer, then wraps it
+/// as one NewBinary. Clean fields are copied directly; dirty fields (needing
+/// quoting) are written with doubled escapes. The result is `[<<binary>>]` —
+/// a one-element iodata list containing the entire CSV output.
 ///
-/// Clean fields are passed through as the original Term (zero copy).
-/// Only dirty fields needing quoting get a NewBinary allocation.
-/// Separator and newline use lightweight integer terms for single-byte values.
+/// This minimizes BEAM-side allocation (one binary, one list cell) and avoids
+/// per-field Term construction overhead at the cost of copying clean field bytes.
 ///
 /// Formula escaping and non-UTF-8 encoding are handled via the PostProcess enum:
-/// - None: identical to previous behavior (zero overhead)
+/// - None: UTF-8, no formula (fast path)
 /// - FormulaOnly: prefix triggered fields with replacement bytes
 /// - EncodingOnly: convert all output to target encoding
 /// - Full: both formula escaping and encoding conversion
+#[allow(clippy::too_many_arguments)]
 #[rustler::nif(schedule = "DirtyCpu")]
 fn encode_string<'a>(
     env: Env<'a>,
@@ -965,20 +983,27 @@ fn encode_string<'a>(
     line_sep_term: Term<'a>,
     formula_term: Term<'a>,
     encoding_term: Term<'a>,
+    reserved_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
     let line_separator = decode_line_separator(line_sep_term)?;
     let formula = decode_formula_config(formula_term)?;
     let encoding = decode_encoding_target(encoding_term)?;
+    let reserved = decode_reserved(reserved_term)?;
     let post = PostProcess::from(formula, encoding);
 
     let rows_iter: ListIterator<'a> = rows_term.decode().map_err(|_| Error::BadArg)?;
 
     match post {
-        PostProcess::None => {
-            encode_string_none(env, rows_iter, &separators, &escape, &line_separator)
-        }
+        PostProcess::None => encode_string_none(
+            env,
+            rows_iter,
+            &separators,
+            &escape,
+            &line_separator,
+            &reserved,
+        ),
         PostProcess::FormulaOnly(formula) => encode_string_formula(
             env,
             rows_iter,
@@ -986,6 +1011,7 @@ fn encode_string<'a>(
             &escape,
             &line_separator,
             &formula,
+            &reserved,
         ),
         PostProcess::EncodingOnly(target) => encode_string_encoding(
             env,
@@ -994,6 +1020,7 @@ fn encode_string<'a>(
             &escape,
             &line_separator,
             target,
+            &reserved,
         ),
         PostProcess::Full(formula, target) => encode_string_full(
             env,
@@ -1003,6 +1030,7 @@ fn encode_string<'a>(
             &line_separator,
             &formula,
             target,
+            &reserved,
         ),
     }
 }
@@ -1015,6 +1043,7 @@ fn encode_string_none<'a>(
     separators: &Separators,
     escape: &Escape,
     line_separator: &[u8],
+    reserved: &[u8],
 ) -> NifResult<Term<'a>> {
     use strategy::encode::{write_quoted_field, write_quoted_field_general};
 
@@ -1037,9 +1066,9 @@ fn encode_string_none<'a>(
                 let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
                 let field_bytes = field_bin.as_slice();
                 let needs_quoting = if multi_sep {
-                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc)
+                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc, reserved)
                 } else {
-                    field_needs_quoting_simd(field_bytes, dump_sep, esc)
+                    field_needs_quoting_simd(field_bytes, dump_sep, esc, reserved)
                 };
                 if needs_quoting {
                     write_quoted_field(&mut buf, field_bytes, esc);
@@ -1063,7 +1092,7 @@ fn encode_string_none<'a>(
                 first = false;
                 let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
                 let field_bytes = field_bin.as_slice();
-                if field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern) {
+                if field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern, reserved) {
                     write_quoted_field_general(&mut buf, field_bytes, esc_pattern);
                 } else {
                     buf.extend_from_slice(field_bytes);
@@ -1076,7 +1105,7 @@ fn encode_string_none<'a>(
     let mut new_bin = NewBinary::new(env, buf.len());
     new_bin.as_mut_slice().copy_from_slice(&buf);
     let bin_term: Term<'a> = new_bin.into();
-    Ok(vec![bin_term].encode(env))
+    Ok(bin_term)
 }
 
 /// PostProcess::FormulaOnly — UTF-8 + formula escaping.
@@ -1092,6 +1121,7 @@ fn encode_string_formula<'a>(
     escape: &Escape,
     line_separator: &[u8],
     formula: &FormulaConfig,
+    reserved: &[u8],
 ) -> NifResult<Term<'a>> {
     use strategy::encode::{
         write_quoted_field, write_quoted_field_general, write_quoted_field_inner,
@@ -1117,9 +1147,9 @@ fn encode_string_formula<'a>(
                 let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
                 let field_bytes = field_bin.as_slice();
                 let needs_quoting = if multi_sep {
-                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc)
+                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc, reserved)
                 } else {
-                    field_needs_quoting_simd(field_bytes, dump_sep, esc)
+                    field_needs_quoting_simd(field_bytes, dump_sep, esc, reserved)
                 };
 
                 if let Some(prefix) = formula.check(field_bytes) {
@@ -1155,7 +1185,7 @@ fn encode_string_formula<'a>(
                 let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
                 let field_bytes = field_bin.as_slice();
                 let needs_quoting =
-                    field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern);
+                    field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern, reserved);
 
                 if let Some(prefix) = formula.check(field_bytes) {
                     if needs_quoting {
@@ -1180,7 +1210,7 @@ fn encode_string_formula<'a>(
     let mut new_bin = NewBinary::new(env, buf.len());
     new_bin.as_mut_slice().copy_from_slice(&buf);
     let bin_term: Term<'a> = new_bin.into();
-    Ok(vec![bin_term].encode(env))
+    Ok(bin_term)
 }
 
 /// PostProcess::EncodingOnly — non-UTF-8, no formula.
@@ -1192,6 +1222,7 @@ fn encode_string_encoding<'a>(
     escape: &Escape,
     line_separator: &[u8],
     target: EncodingTarget,
+    reserved: &[u8],
 ) -> NifResult<Term<'a>> {
     use strategy::encode::{write_quoted_field, write_quoted_field_general};
     use strategy::encoding::encode_utf8_extend;
@@ -1222,9 +1253,9 @@ fn encode_string_encoding<'a>(
                 let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
                 let field_bytes = field_bin.as_slice();
                 let needs_quoting = if multi_sep {
-                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc)
+                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc, reserved)
                 } else {
-                    field_needs_quoting_simd(field_bytes, dump_sep, esc)
+                    field_needs_quoting_simd(field_bytes, dump_sep, esc, reserved)
                 };
 
                 let utf8_src: &[u8] = if needs_quoting {
@@ -1254,7 +1285,8 @@ fn encode_string_encoding<'a>(
                 let field_bytes = field_bin.as_slice();
 
                 let utf8_src: &[u8] =
-                    if field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern) {
+                    if field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern, reserved)
+                    {
                         scratch.clear();
                         write_quoted_field_general(&mut scratch, field_bytes, esc_pattern);
                         &scratch
@@ -1270,11 +1302,12 @@ fn encode_string_encoding<'a>(
     let mut new_bin = NewBinary::new(env, buf.len());
     new_bin.as_mut_slice().copy_from_slice(&buf);
     let bin_term: Term<'a> = new_bin.into();
-    Ok(vec![bin_term].encode(env))
+    Ok(bin_term)
 }
 
 /// PostProcess::Full — both formula escaping and non-UTF-8 encoding.
 /// Flat Vec<u8> buffer with scratch buffer → single NewBinary.
+#[allow(clippy::too_many_arguments)]
 fn encode_string_full<'a>(
     env: Env<'a>,
     rows_iter: ListIterator<'a>,
@@ -1283,6 +1316,7 @@ fn encode_string_full<'a>(
     line_separator: &[u8],
     formula: &FormulaConfig,
     target: EncodingTarget,
+    reserved: &[u8],
 ) -> NifResult<Term<'a>> {
     use strategy::encode::{
         write_quoted_field, write_quoted_field_general, write_quoted_field_inner,
@@ -1315,9 +1349,9 @@ fn encode_string_full<'a>(
                 let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
                 let field_bytes = field_bin.as_slice();
                 let needs_quoting = if multi_sep {
-                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc)
+                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc, reserved)
                 } else {
-                    field_needs_quoting_simd(field_bytes, dump_sep, esc)
+                    field_needs_quoting_simd(field_bytes, dump_sep, esc, reserved)
                 };
 
                 if let Some(prefix) = formula.check(field_bytes) {
@@ -1362,7 +1396,7 @@ fn encode_string_full<'a>(
                 let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
                 let field_bytes = field_bin.as_slice();
                 let needs_quoting =
-                    field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern);
+                    field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern, reserved);
 
                 if let Some(prefix) = formula.check(field_bytes) {
                     if needs_quoting {
@@ -1394,7 +1428,7 @@ fn encode_string_full<'a>(
     let mut new_bin = NewBinary::new(env, buf.len());
     new_bin.as_mut_slice().copy_from_slice(&buf);
     let bin_term: Term<'a> = new_bin.into();
-    Ok(vec![bin_term].encode(env))
+    Ok(bin_term)
 }
 
 /// Encode rows to CSV in parallel using rayon, returning iodata (list of binaries).
@@ -1408,6 +1442,7 @@ fn encode_string_full<'a>(
 /// Only supports single-byte separator/escape (the common case for parallel workloads).
 /// Falls back to BadArg for multi-byte separator/escape — callers should use
 /// encode_string for those configurations.
+#[allow(clippy::too_many_arguments)]
 #[rustler::nif(schedule = "DirtyCpu")]
 fn encode_string_parallel<'a>(
     env: Env<'a>,
@@ -1417,6 +1452,7 @@ fn encode_string_parallel<'a>(
     line_sep_term: Term<'a>,
     formula_term: Term<'a>,
     encoding_term: Term<'a>,
+    reserved_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
     use rayon::prelude::*;
     use strategy::encode::{
@@ -1430,6 +1466,7 @@ fn encode_string_parallel<'a>(
     let line_separator = decode_line_separator(line_sep_term)?;
     let formula = decode_formula_config(formula_term)?;
     let encoding = decode_encoding_target(encoding_term)?;
+    let reserved = decode_reserved(reserved_term)?;
 
     // Only support single-byte sep/esc for the parallel path
     if !is_all_single_byte(&separators, &escape) {
@@ -1503,7 +1540,8 @@ fn encode_string_parallel<'a>(
                             None
                         };
 
-                        let needs_quoting = field_needs_quoting_simd(field, dump_sep, esc);
+                        let needs_quoting =
+                            field_needs_quoting_simd(field, dump_sep, esc, &reserved);
 
                         if let Some(prefix) = formula_prefix {
                             if needs_quoting {
@@ -1519,13 +1557,10 @@ fn encode_string_parallel<'a>(
                                     out.extend_from_slice(&encoded_esc);
                                 } else {
                                     // FormulaOnly: prefix inside quotes
-                                    let mut result =
-                                        Vec::with_capacity(1 + prefix.len() + field.len() + 8);
-                                    result.push(esc);
-                                    result.extend_from_slice(prefix);
-                                    write_quoted_field_inner(&mut result, field, esc);
-                                    result.push(esc);
-                                    out.extend_from_slice(&result);
+                                    out.push(esc);
+                                    out.extend_from_slice(prefix);
+                                    write_quoted_field_inner(&mut out, field, esc);
+                                    out.push(esc);
                                 }
                             } else if needs_encoding {
                                 // Clean + formula + encoding: prefix raw, field encoded

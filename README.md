@@ -1,6 +1,6 @@
 # RustyCSV
 
-**Ultra-fast CSV parsing and encoding for Elixir.** A purpose-built Rust NIF with six parsing strategies, SIMD-accelerated encoding, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
+**Ultra-fast CSV parsing and encoding for Elixir.** A purpose-built Rust NIF with SIMD acceleration, parallel parsing, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
 
 [![Hex.pm](https://img.shields.io/hexpm/v/rusty_csv.svg)](https://hex.pm/packages/rusty_csv)
 [![Tests](https://img.shields.io/badge/tests-464%20passed-brightgreen.svg)]()
@@ -12,9 +12,9 @@
 
 1. **Speed**: Pure Elixir parsing, while well-optimized, can't match native code with SIMD acceleration for large files.
 
-2. **Flexibility**: Pure Elixir parsers typically offer one parsing approach. Different workloads benefit from different strategies—parallel processing for huge files, streaming for unbounded data.
+2. **Flexibility**: Different workloads benefit from different strategies—parallel processing for huge files, streaming for unbounded data.
 
-3. **Binary chunk streaming**: Pure Elixir streaming requires line-delimited input. RustyCSV can process arbitrary binary chunks (useful for network streams, compressed data, etc.).
+3. **Binary chunk streaming**: RustyCSV can process arbitrary binary chunks (useful for network streams, compressed data, etc.).
 
 **Why not wrap an existing Rust CSV library?** The excellent [csv](https://docs.rs/csv) crate is designed for Rust workflows, not BEAM integration. Wrapping it would require serializing data between Rust and Erlang formats—adding overhead and losing the benefits of direct term construction.
 
@@ -22,7 +22,7 @@
 
 1. **Bounded memory streaming** - Process multi-GB files with ~64KB memory footprint
 2. **Sub-binary field references** - Near-zero BEAM allocation; fields reference the input binary directly
-3. **Multiple strategies** - Choose SIMD, parallel, streaming, or indexed based on your workload
+3. **Multiple strategies** - Choose SIMD, parallel, or streaming based on your workload
 4. **Reduced scheduler load** - Parallel strategy runs on dirty CPU schedulers
 5. **Full NimbleCSV compatibility** - Same API, drop-in replacement
 
@@ -30,19 +30,19 @@
 
 | Feature | RustyCSV | Pure Elixir (NimbleCSV) |
 |---------|----------|-----------|
-| **Parsing strategies** | 6 (SIMD, parallel, streaming, indexed, zero_copy, basic) | 1 |
+| **Parsing strategies** | 3 (SIMD, parallel, streaming) | 1 |
 | **SIMD acceleration** | ✅ via `std::simd` portable SIMD | ❌ |
 | **Parallel parsing** | ✅ via rayon | ❌ |
-| **Streaming (bounded memory)** | ✅ | ❌ |
+| **Binary chunk streaming** | ✅ arbitrary chunks | ❌ line-delimited only |
 | **Multi-separator support** | ✅ `[",", ";"]`, `"::"` | ✅ |
 | **Encoding support** | ✅ UTF-8, UTF-16, Latin-1, UTF-32 | ✅ |
-| **Memory model** | ✅ Sub-binary (all batch) + copy (streaming) | Sub-binary only |
+| **Memory model** | Sub-binary references | Sub-binary references |
 | **NIF encoding** | ✅ Returns flat binary (same bytes, ready to use — no flattening needed) | Returns iodata list (typically flattened by caller) |
 | **High-performance allocator** | ✅ mimalloc | System |
 | **Drop-in replacement** | ✅ Same API | - |
 | **Headers-to-maps** | ✅ `headers: true` or explicit keys | ❌ |
 | **RFC 4180 compliant** | ✅ 464 tests | ✅ |
-| **Benchmark (7MB CSV)** | ~20ms | ~232ms |
+| **Benchmark (7MB CSV)** | ~20ms | ~215ms |
 
 ## Purpose-Built for Elixir
 
@@ -53,7 +53,7 @@ RustyCSV isn't a wrapper around an existing Rust CSV library. It's **custom-buil
 - **ResourceArc-based streaming** - stateful parser properly integrated with BEAM's garbage collector
 - **Direct term building** - parsing results go straight to BEAM terms; encoding writes directly to a flat binary
 
-### Six Parsing Strategies
+### Parsing Strategies
 
 Choose the right tool for the job:
 
@@ -62,17 +62,14 @@ Choose the right tool for the job:
 | `:simd` | **Default.** Fastest for most files | Single-pass SIMD structural scanner via `std::simd` |
 | `:parallel` | Files 500MB+ with complex quoting | Multi-threaded row parsing via `rayon` |
 | `:streaming` | Unbounded/huge files | Bounded-memory chunk processing |
-| `:indexed` | Re-extracting row ranges | Two-phase index-then-extract |
-| `:zero_copy` | Alias for `:simd` | Same boundary-based sub-binary path |
-| `:basic` | Debugging, baselines | Same boundary-based sub-binary path |
 
 **Memory Model:**
 
-All batch strategies (`:simd`, `:basic`, `:indexed`, `:zero_copy`, `:parallel`) use boundary-based sub-binaries — the SIMD scanner finds field boundaries, then creates BEAM sub-binary references that point into the original input binary. Only fields requiring quote unescaping (`""` → `"`) are copied.
+All batch strategies use boundary-based sub-binaries — the SIMD scanner finds field boundaries, then creates BEAM sub-binary references that point into the original input binary. Only fields requiring quote unescaping (`""` → `"`) are copied.
 
 | Strategy | Memory Model | Input Binary | Best When |
 |----------|--------------|--------------|-----------|
-| `:simd`, `:indexed`, `:zero_copy`, `:basic` | Sub-binary | Kept alive until fields GC'd | Default — fast, low memory |
+| `:simd` | Sub-binary | Kept alive until fields GC'd | Default — fast, low memory |
 | `:parallel` | Sub-binary | Kept alive until fields GC'd | Large files, many cores |
 | `:streaming` | Copy (chunked) | Freed per chunk | Unbounded files |
 
@@ -145,10 +142,12 @@ All NimbleCSV functions are supported:
 | `parse_string/2` | Parse CSV string to list of rows (or maps with `headers:`) |
 | `parse_stream/2` | Lazily parse a stream (or maps with `headers:`) |
 | `parse_enumerable/2` | Parse any enumerable |
-| `dump_to_iodata/2` | Convert rows to a flat binary (`strategy: :parallel` for quoting-heavy data) |
-| `dump_to_stream/1` | Lazily convert rows to iodata stream |
+| `dump_to_iodata/2`* | Convert rows to a flat binary (`strategy: :parallel` for quoting-heavy data) |
+| `dump_to_stream/1`* | Lazily convert rows to stream of binaries (one per row) |
 | `to_line_stream/1` | Convert arbitrary chunks to lines |
 | `options/0` | Return module configuration |
+
+\* NimbleCSV returns iodata lists; RustyCSV returns flat binaries (same bytes, no flattening needed).
 
 ## Benchmarks
 
@@ -349,18 +348,15 @@ RustyCSV eliminates the middle step by parsing directly into BEAM terms:
 
 ### Strategy Implementations
 
-All batch strategies share a single-pass SIMD structural scanner that finds field boundaries, then create BEAM sub-binary references directly. They differ in how they organize the scan:
+All batch strategies share a single-pass SIMD structural scanner that finds field boundaries, then create BEAM sub-binary references directly.
 
 | Strategy | Scanning | Term Building | Memory | Best For |
 |----------|----------|---------------|--------|----------|
 | `:simd` | SIMD structural scanner via [`std::simd`](https://doc.rust-lang.org/std/simd/index.html) | Boundary → sub-binary | O(n) | Default, fastest for most files |
-| `:basic` | Same as `:simd` | Boundary → sub-binary | O(n) | Debugging, correctness reference |
-| `:indexed` | Same as `:simd` | Boundary → sub-binary | O(n) | Alias, same performance |
-| `:zero_copy` | Same as `:simd` | Boundary → sub-binary | O(n) | Alias, same performance |
 | `:parallel` | SIMD structural scanner | Boundary → sub-binary | O(n) | Large files with many cores |
 | `:streaming` | Byte-by-byte | Copy (chunked) | O(chunk) | Unbounded/huge files |
 
-**Shared across all batch strategies:**
+**Shared across batch strategies (`:simd`, `:parallel`):**
 - Single-pass SIMD structural scanner (finds all unquoted separators and row endings in one sweep)
 - Boundary-based sub-binary field references (near-zero BEAM allocation)
 - Hybrid unescaping: sub-binaries for clean fields, copy only when `""` → `"` unescaping needed

@@ -243,7 +243,20 @@ defmodule RustyCSV do
 
   ## Encoding Support
 
-  RustyCSV supports character encoding conversion via the `:encoding` option:
+  RustyCSV supports character encoding conversion via the `:encoding` option.
+  This is useful when exporting CSVs with non-ASCII characters (accents, CJK,
+  emoji) that need to open correctly in spreadsheet applications:
+
+      alias RustyCSV.Spreadsheet
+
+      # Export data with international characters for Excel/Google Sheets/Numbers
+      rows = [["名前", "年齢"], ["田中", "27"], ["Müller", "35"]]
+      csv = Spreadsheet.dump_to_iodata(rows) |> IO.iodata_to_binary()
+      File.write!("export.csv", csv)
+
+  The pre-defined `RustyCSV.Spreadsheet` module outputs UTF-16 LE with BOM,
+  which spreadsheet applications auto-detect correctly. You can also define
+  custom encodings:
 
       RustyCSV.define(MySpreadsheet,
         separator: "\t",
@@ -259,8 +272,6 @@ defmodule RustyCSV do
     * `{:utf16, :big}` - UTF-16 Big Endian
     * `{:utf32, :little}` - UTF-32 Little Endian
     * `{:utf32, :big}` - UTF-32 Big Endian
-
-  Use `RustyCSV.Spreadsheet` for Excel-compatible UTF-16 LE tab-separated values.
 
   """
 
@@ -294,13 +305,18 @@ defmodule RustyCSV do
 
   ## Memory Model Comparison
 
-  | Strategy | Memory Model | Input Binary | Best When |
-  |----------|--------------|--------------|-----------|
-  | `:simd` | Copy | Freed immediately | Default, memory-constrained |
-  | `:basic` | Copy | Freed immediately | Debugging, baseline |
-  | `:indexed` | Copy | Freed immediately | Row range extraction |
-  | `:parallel` | Copy | Freed immediately | Large files, complex CSVs |
-  | `:zero_copy` | Sub-binary | Kept alive | Speed-critical, short-lived |
+  All strategies use boundary-based parsing: the NIF scans the input to find
+  field boundaries, then returns sub-binary references for clean fields (zero
+  copy) and only allocates new binaries for fields that require unescaping.
+  The input binary is kept alive while any sub-binary references it.
+
+  | Strategy | Best When |
+  |----------|-----------|
+  | `:simd` | Default, fastest for most files |
+  | `:basic` | Debugging, baseline |
+  | `:indexed` | Row range extraction |
+  | `:parallel` | Large files 500MB+, complex quoting |
+  | `:zero_copy` | Speed-critical, short-lived results |
 
   ## Examples
 
@@ -655,6 +671,7 @@ defmodule RustyCSV do
     trim_bom = Keyword.get(options, :trim_bom, false)
     dump_bom = Keyword.get(options, :dump_bom, false)
     reserved = Keyword.get(options, :reserved, [])
+    reserved_binaries = Enum.map(reserved, &normalize_codepoint/1)
     escape_formula = Keyword.get(options, :escape_formula, nil)
     default_strategy = Keyword.get(options, :strategy, :simd)
     moduledoc = Keyword.get(options, :moduledoc)
@@ -691,7 +708,8 @@ defmodule RustyCSV do
       stored_options: stored_options,
       moduledoc: moduledoc,
       encoding: encoding,
-      bom: bom
+      bom: bom,
+      reserved_binaries: reserved_binaries
     }
   end
 
@@ -814,6 +832,7 @@ defmodule RustyCSV do
       @stored_options unquote(Macro.escape(config.stored_options))
       @encoding unquote(Macro.escape(config.encoding))
       @bom unquote(Macro.escape(config.bom))
+      @reserved_binaries unquote(Macro.escape(config.reserved_binaries))
     end
   end
 
@@ -1257,17 +1276,12 @@ defmodule RustyCSV do
           @escape_binary,
           @line_separator,
           @formula_nif_config,
-          @encoding
+          @encoding,
+          @reserved_binaries
         )
       rescue
         ArgumentError ->
-          rows =
-            Enum.map(rows, fn row ->
-              Enum.map(row, fn
-                field when is_binary(field) -> field
-                field -> to_string(field)
-              end)
-            end)
+          rows = coerce_fields_to_binary(rows)
 
           RustyCSV.Native.encode_string_parallel(
             rows,
@@ -1275,7 +1289,8 @@ defmodule RustyCSV do
             @escape_binary,
             @line_separator,
             @formula_nif_config,
-            @encoding
+            @encoding,
+            @reserved_binaries
           )
       end
 
@@ -1286,17 +1301,12 @@ defmodule RustyCSV do
           @escape_binary,
           @line_separator,
           @formula_nif_config,
-          @encoding
+          @encoding,
+          @reserved_binaries
         )
       rescue
         ArgumentError ->
-          rows =
-            Enum.map(rows, fn row ->
-              Enum.map(row, fn
-                field when is_binary(field) -> field
-                field -> to_string(field)
-              end)
-            end)
+          rows = coerce_fields_to_binary(rows)
 
           RustyCSV.Native.encode_string(
             rows,
@@ -1304,8 +1314,18 @@ defmodule RustyCSV do
             @escape_binary,
             @line_separator,
             @formula_nif_config,
-            @encoding
+            @encoding,
+            @reserved_binaries
           )
+      end
+
+      defp coerce_fields_to_binary(rows) do
+        Enum.map(rows, fn row ->
+          Enum.map(row, fn
+            field when is_binary(field) -> field
+            field -> to_string(field)
+          end)
+        end)
       end
 
       @doc """
@@ -1324,7 +1344,8 @@ defmodule RustyCSV do
           @escape_binary,
           @line_separator,
           @formula_nif_config,
-          @encoding
+          @encoding,
+          @reserved_binaries
         )
       rescue
         ArgumentError ->
@@ -1340,7 +1361,8 @@ defmodule RustyCSV do
             @escape_binary,
             @line_separator,
             @formula_nif_config,
-            @encoding
+            @encoding,
+            @reserved_binaries
           )
       end
     end

@@ -13,17 +13,12 @@ Unlike projects that wrap existing Rust crates (like the excellent `csv` crate),
 - **Dirty scheduler awareness** - Long operations run on dirty CPU schedulers
 - **Sub-binary field references** - All batch strategies return BEAM sub-binaries pointing into the original input, only allocating for quote unescaping
 
-### Six Parsing Strategies
-
-RustyCSV offers unmatched flexibility with six parsing strategies:
+### Parsing Strategies
 
 | Strategy | Innovation |
 |----------|------------|
-| `:simd` | Shared SIMD structural scan + boundary-based sub-binary fields (default) |
-| `:basic` | Alias for `:simd` (same boundary-based path, retained for debugging) |
-| `:indexed` | Alias for `:simd` (same boundary-based path) |
-| `:zero_copy` | Alias for `:simd` (same boundary-based path) |
-| `:parallel` | Shared SIMD scan + rayon parallel boundary extraction + sub-binaries |
+| `:simd` | SIMD structural scan + boundary-based sub-binary fields (default) |
+| `:parallel` | SIMD scan + rayon parallel boundary extraction + sub-binaries |
 | `:streaming` | Stateful parser with bounded memory, handles multi-GB files |
 
 ### Memory Efficiency
@@ -36,7 +31,7 @@ RustyCSV offers unmatched flexibility with six parsing strategies:
 ### Validated Correctness
 
 - **464 tests** covering RFC 4180, industry test suites, edge cases, encodings, multi-byte separators/escapes, and headers-to-maps
-- **Cross-strategy validation** - All 6 strategies produce identical output
+- **Cross-strategy validation** - All strategies produce identical output
 - **NimbleCSV compatibility** - Verified identical behavior for all API functions
 
 ## Quick Start
@@ -127,17 +122,12 @@ CSV.parse_string(data, headers: [:name, :age])
 
 ## Parsing Strategies
 
-RustyCSV implements six parsing strategies, each optimized for different use cases:
-
-All five batch strategies (`:simd`, `:basic`, `:indexed`, `:parallel`, `:zero_copy`) share a single-pass SIMD structural scanner (`scan_structural`) that finds every unquoted separator and row ending in one sweep, producing a `StructuralIndex`. All five use boundary-based sub-binary output — they parse field boundaries, then create BEAM sub-binary references into the original input. The four single-threaded strategies extract boundaries on one thread; `:parallel` uses rayon to extract boundaries across multiple threads, then builds sub-binary terms on the main thread.
+Both batch strategies (`:simd`, `:parallel`) share a single-pass SIMD structural scanner (`scan_structural`) that finds every unquoted separator and row ending in one sweep, producing a `StructuralIndex`. Both use boundary-based sub-binary output — they parse field boundaries, then create BEAM sub-binary references into the original input. `:simd` extracts boundaries on one thread; `:parallel` uses rayon to extract boundaries across multiple threads, then builds sub-binary terms on the main thread.
 
 | Strategy | Description | Best For |
 |----------|-------------|----------|
 | `:simd` | SIMD scan + boundary-based sub-binary fields (default) | Most files - fastest general purpose |
-| `:basic` | Alias for `:simd` (same boundary-based path) | Debugging, baseline comparison |
-| `:indexed` | Alias for `:simd` (same boundary-based path) | Compatibility |
 | `:parallel` | SIMD scan + rayon parallel boundary extraction + sub-binaries | Large files with many cores |
-| `:zero_copy` | Alias for `:simd` (same boundary-based path) | Compatibility |
 | `:streaming` | Stateful chunked parser | Unbounded files, bounded memory |
 
 ### Strategy Selection Guide
@@ -145,19 +135,16 @@ All five batch strategies (`:simd`, `:basic`, `:indexed`, `:parallel`, `:zero_co
 ```
 File Size        Recommended Strategy
 ─────────────────────────────────────────────────────────────
-< 1 MB           :simd (default)
-1-500 MB         :simd (default)
-Large files      :simd or :parallel (multi-core)
+< 500 MB         :simd (default)
+500 MB+          :simd or :parallel (multi-core)
 Unbounded        streaming (parse_stream)
 ```
-
-All batch strategies except `:parallel` use the same boundary-based sub-binary path. `:simd` is the recommended default for all file sizes.
 
 ### Memory Model Trade-offs
 
 | Strategy | Memory Model | Input Binary | Best When |
 |----------|--------------|--------------|-----------|
-| `:simd`, `:basic`, `:indexed`, `:zero_copy` | Sub-binary | Kept alive until fields GC'd | General use (5-14x less memory than pure Elixir) |
+| `:simd` | Sub-binary | Kept alive until fields GC'd | General use |
 | `:parallel` | Sub-binary | Kept alive until fields GC'd | Multi-core, large files |
 | `:streaming` | Copy (chunked) | Freed per chunk | Unbounded files |
 

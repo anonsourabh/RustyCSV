@@ -1,9 +1,10 @@
-// CSV encoding helpers — field scanning and quoting for the iodata NIF
+// CSV encoding helpers — field scanning and quoting for the encoding NIF
 //
-// The iodata NIF (encode_string in lib.rs) walks Erlang lists directly and
-// passes clean fields through as zero-copy Terms. Only dirty fields that need
-// quoting are allocated as NewBinary. These helpers handle the scanning
-// ("does this field need quoting?") and quoting ("wrap + double escapes").
+// The encoding NIF (encode_string in lib.rs) walks Erlang lists, scans each
+// field for characters requiring quoting, and writes all output into a single
+// flat Vec<u8> buffer that becomes one NewBinary. These helpers handle the
+// scanning ("does this field need quoting?") and quoting ("wrap + double
+// escapes").
 //
 // Scanning strategies:
 //   SIMD:    portable_simd 16/32-byte vectorized comparison (fastest)
@@ -93,7 +94,7 @@ pub fn write_quoted_field_inner_general(out: &mut Vec<u8>, field: &[u8], escape:
 
 /// SIMD: check if field needs quoting using vectorized comparison.
 #[inline]
-pub fn field_needs_quoting_simd(field: &[u8], separator: u8, escape: u8) -> bool {
+pub fn field_needs_quoting_simd(field: &[u8], separator: u8, escape: u8, reserved: &[u8]) -> bool {
     let len = field.len();
     let mut pos = 0;
 
@@ -104,13 +105,20 @@ pub fn field_needs_quoting_simd(field: &[u8], separator: u8, escape: u8) -> bool
         let esc_splat = Simd::<u8, WIDE>::splat(escape);
         let lf_splat = Simd::<u8, WIDE>::splat(b'\n');
         let cr_splat = Simd::<u8, WIDE>::splat(b'\r');
+        let res_splats: Vec<Simd<u8, WIDE>> = reserved
+            .iter()
+            .map(|&r| Simd::<u8, WIDE>::splat(r))
+            .collect();
 
         while pos + WIDE <= len {
             let chunk = Simd::<u8, WIDE>::from_slice(&field[pos..pos + WIDE]);
-            let hits = chunk.simd_eq(sep_splat)
+            let mut hits = chunk.simd_eq(sep_splat)
                 | chunk.simd_eq(esc_splat)
                 | chunk.simd_eq(lf_splat)
                 | chunk.simd_eq(cr_splat);
+            for splat in &res_splats {
+                hits |= chunk.simd_eq(*splat);
+            }
             if hits.any() {
                 return true;
             }
@@ -124,13 +132,20 @@ pub fn field_needs_quoting_simd(field: &[u8], separator: u8, escape: u8) -> bool
         let esc_splat = Simd::<u8, CHUNK>::splat(escape);
         let lf_splat = Simd::<u8, CHUNK>::splat(b'\n');
         let cr_splat = Simd::<u8, CHUNK>::splat(b'\r');
+        let res_splats: Vec<Simd<u8, CHUNK>> = reserved
+            .iter()
+            .map(|&r| Simd::<u8, CHUNK>::splat(r))
+            .collect();
 
         while pos + CHUNK <= len {
             let chunk = Simd::<u8, CHUNK>::from_slice(&field[pos..pos + CHUNK]);
-            let hits = chunk.simd_eq(sep_splat)
+            let mut hits = chunk.simd_eq(sep_splat)
                 | chunk.simd_eq(esc_splat)
                 | chunk.simd_eq(lf_splat)
                 | chunk.simd_eq(cr_splat);
+            for splat in &res_splats {
+                hits |= chunk.simd_eq(*splat);
+            }
             if hits.any() {
                 return true;
             }
@@ -141,7 +156,7 @@ pub fn field_needs_quoting_simd(field: &[u8], separator: u8, escape: u8) -> bool
     // Scalar tail
     while pos < len {
         let b = field[pos];
-        if b == separator || b == escape || b == b'\n' || b == b'\r' {
+        if b == separator || b == escape || b == b'\n' || b == b'\r' || reserved.contains(&b) {
             return true;
         }
         pos += 1;
@@ -152,7 +167,12 @@ pub fn field_needs_quoting_simd(field: &[u8], separator: u8, escape: u8) -> bool
 
 /// SIMD variant with multiple separators
 #[inline]
-pub fn field_needs_quoting_simd_multi_sep(field: &[u8], separators: &[u8], escape: u8) -> bool {
+pub fn field_needs_quoting_simd_multi_sep(
+    field: &[u8],
+    separators: &[u8],
+    escape: u8,
+    reserved: &[u8],
+) -> bool {
     let len = field.len();
     let mut pos = 0;
 
@@ -166,12 +186,19 @@ pub fn field_needs_quoting_simd_multi_sep(field: &[u8], separators: &[u8], escap
             .iter()
             .map(|&s| Simd::<u8, WIDE>::splat(s))
             .collect();
+        let res_splats: Vec<Simd<u8, WIDE>> = reserved
+            .iter()
+            .map(|&r| Simd::<u8, WIDE>::splat(r))
+            .collect();
 
         while pos + WIDE <= len {
             let chunk = Simd::<u8, WIDE>::from_slice(&field[pos..pos + WIDE]);
             let mut hits =
                 chunk.simd_eq(esc_splat) | chunk.simd_eq(lf_splat) | chunk.simd_eq(cr_splat);
             for splat in &sep_splats {
+                hits |= chunk.simd_eq(*splat);
+            }
+            for splat in &res_splats {
                 hits |= chunk.simd_eq(*splat);
             }
             if hits.any() {
@@ -190,12 +217,19 @@ pub fn field_needs_quoting_simd_multi_sep(field: &[u8], separators: &[u8], escap
             .iter()
             .map(|&s| Simd::<u8, CHUNK>::splat(s))
             .collect();
+        let res_splats: Vec<Simd<u8, CHUNK>> = reserved
+            .iter()
+            .map(|&r| Simd::<u8, CHUNK>::splat(r))
+            .collect();
 
         while pos + CHUNK <= len {
             let chunk = Simd::<u8, CHUNK>::from_slice(&field[pos..pos + CHUNK]);
             let mut hits =
                 chunk.simd_eq(esc_splat) | chunk.simd_eq(lf_splat) | chunk.simd_eq(cr_splat);
             for splat in &sep_splats {
+                hits |= chunk.simd_eq(*splat);
+            }
+            for splat in &res_splats {
                 hits |= chunk.simd_eq(*splat);
             }
             if hits.any() {
@@ -208,7 +242,12 @@ pub fn field_needs_quoting_simd_multi_sep(field: &[u8], separators: &[u8], escap
     // Scalar tail
     while pos < len {
         let b = field[pos];
-        if b == escape || b == b'\n' || b == b'\r' || separators.contains(&b) {
+        if b == escape
+            || b == b'\n'
+            || b == b'\r'
+            || separators.contains(&b)
+            || reserved.contains(&b)
+        {
             return true;
         }
         pos += 1;
@@ -223,10 +262,15 @@ pub fn field_needs_quoting_simd_multi_sep(field: &[u8], separators: &[u8], escap
 
 /// Multi-byte: check if field needs quoting
 #[inline]
-pub fn field_needs_quoting_general(field: &[u8], separator: &[u8], escape: &[u8]) -> bool {
-    // Check for newlines byte-by-byte
+pub fn field_needs_quoting_general(
+    field: &[u8],
+    separator: &[u8],
+    escape: &[u8],
+    reserved: &[u8],
+) -> bool {
+    // Check for newlines and reserved bytes
     for &b in field {
-        if b == b'\n' || b == b'\r' {
+        if b == b'\n' || b == b'\r' || reserved.contains(&b) {
             return true;
         }
     }
@@ -290,15 +334,15 @@ mod tests {
     #[test]
     fn test_simd_field_needs_quoting() {
         // Short field — scalar tail
-        assert!(field_needs_quoting_simd(b"a,b", b',', b'"'));
-        assert!(!field_needs_quoting_simd(b"abc", b',', b'"'));
+        assert!(field_needs_quoting_simd(b"a,b", b',', b'"', &[]));
+        assert!(!field_needs_quoting_simd(b"abc", b',', b'"', &[]));
 
         // Medium field (>= 16 bytes) — SIMD path
         let clean = b"abcdefghijklmnopqrstuvwxyz";
-        assert!(!field_needs_quoting_simd(clean, b',', b'"'));
+        assert!(!field_needs_quoting_simd(clean, b',', b'"', &[]));
 
         let dirty = b"abcdefghijklmno,qrstuvwxyz";
-        assert!(field_needs_quoting_simd(dirty, b',', b'"'));
+        assert!(field_needs_quoting_simd(dirty, b',', b'"', &[]));
     }
 
     #[test]
@@ -306,44 +350,95 @@ mod tests {
         assert!(field_needs_quoting_simd_multi_sep(
             b"a,b",
             &[b',', b';'],
-            b'"'
+            b'"',
+            &[]
         ));
         assert!(field_needs_quoting_simd_multi_sep(
             b"a;b",
             &[b',', b';'],
-            b'"'
+            b'"',
+            &[]
         ));
         assert!(!field_needs_quoting_simd_multi_sep(
             b"abc",
             &[b',', b';'],
-            b'"'
+            b'"',
+            &[]
         ));
     }
 
     #[test]
     fn test_field_needs_quoting_general() {
-        assert!(field_needs_quoting_general(b"a::b", b"::", b"$$"));
-        assert!(field_needs_quoting_general(b"a$$b", b"::", b"$$"));
-        assert!(field_needs_quoting_general(b"a\nb", b"::", b"$$"));
-        assert!(!field_needs_quoting_general(b"hello", b"::", b"$$"));
+        assert!(field_needs_quoting_general(b"a::b", b"::", b"$$", &[]));
+        assert!(field_needs_quoting_general(b"a$$b", b"::", b"$$", &[]));
+        assert!(field_needs_quoting_general(b"a\nb", b"::", b"$$", &[]));
+        assert!(!field_needs_quoting_general(b"hello", b"::", b"$$", &[]));
     }
 
     #[test]
     fn test_field_needs_quoting_newlines() {
-        assert!(field_needs_quoting_simd(b"line1\nline2", b',', b'"'));
-        assert!(field_needs_quoting_simd(b"line1\r\nline2", b',', b'"'));
-        assert!(field_needs_quoting_simd(b"line1\rline2", b',', b'"'));
+        assert!(field_needs_quoting_simd(b"line1\nline2", b',', b'"', &[]));
+        assert!(field_needs_quoting_simd(b"line1\r\nline2", b',', b'"', &[]));
+        assert!(field_needs_quoting_simd(b"line1\rline2", b',', b'"', &[]));
     }
 
     #[test]
     fn test_field_needs_quoting_escape_char() {
-        assert!(field_needs_quoting_simd(b"say \"hello\"", b',', b'"'));
-        assert!(!field_needs_quoting_simd(b"say hello", b',', b'"'));
+        assert!(field_needs_quoting_simd(b"say \"hello\"", b',', b'"', &[]));
+        assert!(!field_needs_quoting_simd(b"say hello", b',', b'"', &[]));
     }
 
     #[test]
     fn test_empty_field() {
-        assert!(!field_needs_quoting_simd(b"", b',', b'"'));
-        assert!(!field_needs_quoting_general(b"", b"::", b"$$"));
+        assert!(!field_needs_quoting_simd(b"", b',', b'"', &[]));
+        assert!(!field_needs_quoting_general(b"", b"::", b"$$", &[]));
+    }
+
+    #[test]
+    fn test_reserved_chars_simd() {
+        // Without reserved, $ doesn't trigger quoting
+        assert!(!field_needs_quoting_simd(b"price$100", b',', b'"', &[]));
+        // With reserved, $ triggers quoting
+        assert!(field_needs_quoting_simd(b"price$100", b',', b'"', &[b'$']));
+
+        // SIMD path (>= 16 bytes)
+        let field = b"abcdefghijklmno$qrstuvwxyz";
+        assert!(!field_needs_quoting_simd(field, b',', b'"', &[]));
+        assert!(field_needs_quoting_simd(field, b',', b'"', &[b'$']));
+
+        // Multiple reserved chars
+        assert!(field_needs_quoting_simd(b"a=b", b',', b'"', &[b'$', b'=']));
+    }
+
+    #[test]
+    fn test_reserved_chars_multi_sep() {
+        assert!(!field_needs_quoting_simd_multi_sep(
+            b"a$b",
+            &[b',', b';'],
+            b'"',
+            &[]
+        ));
+        assert!(field_needs_quoting_simd_multi_sep(
+            b"a$b",
+            &[b',', b';'],
+            b'"',
+            &[b'$']
+        ));
+    }
+
+    #[test]
+    fn test_reserved_chars_general() {
+        assert!(!field_needs_quoting_general(
+            b"price$100",
+            b"::",
+            b"$$",
+            &[]
+        ));
+        assert!(field_needs_quoting_general(
+            b"price@100",
+            b"::",
+            b"$$",
+            &[b'@']
+        ));
     }
 }

@@ -30,8 +30,8 @@ defmodule RustyCSV.MixProject do
 
   defp description do
     """
-    Ultra-fast CSV parsing for Elixir. A purpose-built Rust NIF with six parsing
-    strategies, SIMD acceleration, and bounded-memory streaming. Drop-in NimbleCSV replacement.
+    Ultra-fast CSV parsing for Elixir. A purpose-built Rust NIF with SIMD acceleration,
+    parallel parsing, and bounded-memory streaming. Drop-in NimbleCSV replacement.
     """
   end
 

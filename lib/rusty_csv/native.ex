@@ -563,9 +563,17 @@ defmodule RustyCSV.Native do
       "a,b\\n1,2\\n"
 
   """
-  @spec encode_string([[binary()]], separator(), escape(), binary() | atom(), term(), term()) ::
+  @spec encode_string(
+          [[binary()]],
+          separator(),
+          escape(),
+          binary() | atom(),
+          term(),
+          term(),
+          [binary()]
+        ) ::
           iodata()
-  def encode_string(_rows, _separator, _escape, _line_separator, _formula, _encoding),
+  def encode_string(_rows, _separator, _escape, _line_separator, _formula, _encoding, _reserved),
     do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
@@ -604,10 +612,19 @@ defmodule RustyCSV.Native do
           escape(),
           binary() | atom(),
           term(),
-          term()
+          term(),
+          [binary()]
         ) :: iodata()
-  def encode_string_parallel(_rows, _separator, _escape, _line_separator, _formula, _encoding),
-    do: :erlang.nif_error(:nif_not_loaded)
+  def encode_string_parallel(
+        _rows,
+        _separator,
+        _escape,
+        _line_separator,
+        _formula,
+        _encoding,
+        _reserved
+      ),
+      do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================
   # Memory Tracking (requires `memory_tracking` feature flag)
