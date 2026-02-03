@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6.1] - 2026-02-03
+
+### Fixed
+
+- **Disabled `memory_tracking` by default** — the `memory_tracking` Cargo feature was accidentally left enabled in the 0.3.6 release. This feature wraps every allocation/deallocation with atomic counter updates, adding measurable overhead. It is now disabled by default as intended. Enable explicitly for profiling: `default = ["mimalloc", "memory_tracking"]` in `native/rustycsv/Cargo.toml`.
+
 ## [0.3.6] - 2026-02-02
 
 Decoding and encoding overhaul. All batch decode strategies now use boundary-based sub-binaries (zero-copy for most fields). Encoding writes a single flat binary instead of an iodata list. **3.5–19x faster** decoding, **2.5–31x faster** encoding vs pure Elixir, with **5–14x less memory** for decoding.

@@ -1,6 +1,6 @@
 [package]
 name = "rustycsv"
-version = "0.3.6"
+version = "0.3.6.1"
 authors = ["Jeff Huen"]
 edition = "2021"
 
@@ -15,7 +15,7 @@ rayon = "1.10"    # Data parallelism for parallel parsing
 mimalloc = { version = "0.1", default-features = false, optional = true }
 
 [features]
-default = ["mimalloc", "memory_tracking"]
+default = ["mimalloc"]
 mimalloc = ["dep:mimalloc"]
 # Enable memory tracking (adds overhead - use only for profiling)
 memory_tracking = []
