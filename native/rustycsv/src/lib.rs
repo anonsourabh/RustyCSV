@@ -12,8 +12,8 @@
 // E: Parallel parsing via rayon (parse_string_parallel)
 // F: Zero-copy sub-binary parsing (parse_string_zero_copy)
 
-use rustler::{Atom, Binary, Env, Error, NewBinary, NifResult, ResourceArc, Term};
-use std::borrow::Cow;
+use rustler::types::ListIterator;
+use rustler::{Atom, Binary, Encoder, Env, Error, NewBinary, NifResult, ResourceArc, Term};
 
 mod atoms {
     rustler::atoms! {
@@ -133,21 +133,17 @@ fn lock_parser(
 }
 
 use strategy::{
-    contains_escape, encode_csv_general, encode_csv_simd, encode_csv_simd_multi_sep, parse_csv,
-    parse_csv_boundaries_general, parse_csv_boundaries_general_with_newlines,
-    parse_csv_boundaries_multi_sep, parse_csv_boundaries_with_config, parse_csv_fast,
-    parse_csv_fast_multi_sep, parse_csv_fast_with_config, parse_csv_general,
-    parse_csv_general_with_newlines, parse_csv_indexed, parse_csv_indexed_general,
-    parse_csv_indexed_general_with_newlines, parse_csv_indexed_multi_sep,
-    parse_csv_indexed_with_config, parse_csv_multi_sep, parse_csv_parallel,
-    parse_csv_parallel_general, parse_csv_parallel_general_with_newlines,
-    parse_csv_parallel_multi_sep, parse_csv_parallel_with_config, parse_csv_with_config,
+    contains_escape, field_needs_quoting_general, field_needs_quoting_simd,
+    field_needs_quoting_simd_multi_sep, parse_csv_boundaries_general,
+    parse_csv_boundaries_general_with_newlines, parse_csv_boundaries_multi_sep,
+    parse_csv_boundaries_with_config, parse_csv_parallel_boundaries,
+    parse_csv_parallel_boundaries_general, parse_csv_parallel_boundaries_general_with_newlines,
+    parse_csv_parallel_boundaries_multi_sep, parse_csv_parallel_boundaries_with_config,
     unescape_field_general,
 };
 use term::{
     boundaries_to_maps_hybrid, boundaries_to_maps_hybrid_general, boundaries_to_term_hybrid,
-    boundaries_to_term_hybrid_general, cow_rows_to_maps, cow_rows_to_term, owned_rows_to_maps,
-    owned_rows_to_term,
+    boundaries_to_term_hybrid_general, owned_rows_to_term,
 };
 
 // ============================================================================
@@ -266,9 +262,8 @@ fn reset_rust_memory_stats() -> (usize, usize) {
 /// Parse CSV string into list of rows (basic byte-by-byte)
 #[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
-    let bytes = input.as_slice();
-    let rows = parse_csv(bytes);
-    Ok(cow_rows_to_term(env, rows))
+    let boundaries = parse_csv_boundaries_with_config(input.as_slice(), b',', b'"');
+    Ok(boundaries_to_term_hybrid(env, input, boundaries, b'"'))
 }
 
 /// Parse CSV with configurable separator(s), escape, and newlines
@@ -283,26 +278,8 @@ fn parse_string_with_config<'a>(
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
     let newlines = decode_newlines(newlines_term)?;
-    let bytes = input.as_slice();
-
-    if !newlines.is_default {
-        let rows =
-            parse_csv_general_with_newlines(bytes, &separators.patterns, &escape.bytes, &newlines);
-        return Ok(cow_rows_to_term(env, rows));
-    }
-
-    let rows = if is_all_single_byte(&separators, &escape) {
-        let esc = escape.bytes[0];
-        let sep_bytes = single_byte_seps(&separators);
-        if sep_bytes.len() == 1 {
-            parse_csv_with_config(bytes, sep_bytes[0], esc)
-        } else {
-            parse_csv_multi_sep(bytes, &sep_bytes, esc)
-        }
-    } else {
-        parse_csv_general(bytes, &separators.patterns, &escape.bytes)
-    };
-    Ok(cow_rows_to_term(env, rows))
+    let boundaries = dispatch_boundary_parse(input.as_slice(), &separators, &escape, &newlines);
+    Ok(dispatch_boundaries_to_term(env, input, boundaries, &escape))
 }
 
 // ============================================================================
@@ -312,9 +289,8 @@ fn parse_string_with_config<'a>(
 /// Parse using SIMD structural scanner for delimiter detection
 #[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_fast<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
-    let bytes = input.as_slice();
-    let rows = parse_csv_fast(bytes);
-    Ok(cow_rows_to_term(env, rows))
+    let boundaries = parse_csv_boundaries_with_config(input.as_slice(), b',', b'"');
+    Ok(boundaries_to_term_hybrid(env, input, boundaries, b'"'))
 }
 
 /// Parse using SIMD with configurable separator(s), escape, and newlines
@@ -329,26 +305,8 @@ fn parse_string_fast_with_config<'a>(
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
     let newlines = decode_newlines(newlines_term)?;
-    let bytes = input.as_slice();
-
-    if !newlines.is_default {
-        let rows =
-            parse_csv_general_with_newlines(bytes, &separators.patterns, &escape.bytes, &newlines);
-        return Ok(cow_rows_to_term(env, rows));
-    }
-
-    let rows = if is_all_single_byte(&separators, &escape) {
-        let esc = escape.bytes[0];
-        let sep_bytes = single_byte_seps(&separators);
-        if sep_bytes.len() == 1 {
-            parse_csv_fast_with_config(bytes, sep_bytes[0], esc)
-        } else {
-            parse_csv_fast_multi_sep(bytes, &sep_bytes, esc)
-        }
-    } else {
-        parse_csv_general(bytes, &separators.patterns, &escape.bytes)
-    };
-    Ok(cow_rows_to_term(env, rows))
+    let boundaries = dispatch_boundary_parse(input.as_slice(), &separators, &escape, &newlines);
+    Ok(dispatch_boundaries_to_term(env, input, boundaries, &escape))
 }
 
 // ============================================================================
@@ -358,9 +316,8 @@ fn parse_string_fast_with_config<'a>(
 /// Parse using two-phase approach: build index, then extract
 #[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_indexed<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
-    let bytes = input.as_slice();
-    let rows = parse_csv_indexed(bytes);
-    Ok(cow_rows_to_term(env, rows))
+    let boundaries = parse_csv_boundaries_with_config(input.as_slice(), b',', b'"');
+    Ok(boundaries_to_term_hybrid(env, input, boundaries, b'"'))
 }
 
 /// Parse using two-phase with configurable separator(s), escape, and newlines
@@ -375,30 +332,8 @@ fn parse_string_indexed_with_config<'a>(
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
     let newlines = decode_newlines(newlines_term)?;
-    let bytes = input.as_slice();
-
-    if !newlines.is_default {
-        let rows = parse_csv_indexed_general_with_newlines(
-            bytes,
-            &separators.patterns,
-            &escape.bytes,
-            &newlines,
-        );
-        return Ok(cow_rows_to_term(env, rows));
-    }
-
-    let rows = if is_all_single_byte(&separators, &escape) {
-        let esc = escape.bytes[0];
-        let sep_bytes = single_byte_seps(&separators);
-        if sep_bytes.len() == 1 {
-            parse_csv_indexed_with_config(bytes, sep_bytes[0], esc)
-        } else {
-            parse_csv_indexed_multi_sep(bytes, &sep_bytes, esc)
-        }
-    } else {
-        parse_csv_indexed_general(bytes, &separators.patterns, &escape.bytes)
-    };
-    Ok(cow_rows_to_term(env, rows))
+    let boundaries = dispatch_boundary_parse(input.as_slice(), &separators, &escape, &newlines);
+    Ok(dispatch_boundaries_to_term(env, input, boundaries, &escape))
 }
 
 // ============================================================================
@@ -502,13 +437,40 @@ fn streaming_set_max_buffer(parser: StreamingParserRef, max: usize) -> NifResult
 // Strategy E: Parallel Parser
 // ============================================================================
 
-/// Parse CSV in parallel using rayon thread pool
+/// Dispatch to the right parallel boundary parser based on separator/escape/newlines config.
+fn dispatch_parallel_boundary_parse(
+    bytes: &[u8],
+    separators: &Separators,
+    escape: &Escape,
+    newlines: &Newlines,
+) -> Vec<Vec<(usize, usize)>> {
+    if !newlines.is_default {
+        return parse_csv_parallel_boundaries_general_with_newlines(
+            bytes,
+            &separators.patterns,
+            &escape.bytes,
+            newlines,
+        );
+    }
+    if is_all_single_byte(separators, escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(separators);
+        if sep_bytes.len() == 1 {
+            parse_csv_parallel_boundaries_with_config(bytes, sep_bytes[0], esc)
+        } else {
+            parse_csv_parallel_boundaries_multi_sep(bytes, &sep_bytes, esc)
+        }
+    } else {
+        parse_csv_parallel_boundaries_general(bytes, &separators.patterns, &escape.bytes)
+    }
+}
+
+/// Parse CSV in parallel using rayon thread pool (boundary-based sub-binaries)
 /// Uses DirtyCpu scheduler since this can take significant time
 #[rustler::nif(schedule = "DirtyCpu")]
 fn parse_string_parallel<'a>(env: Env<'a>, input: Binary<'a>) -> NifResult<Term<'a>> {
-    let bytes = input.as_slice();
-    let rows = parse_csv_parallel(bytes);
-    Ok(owned_rows_to_term(env, rows))
+    let boundaries = parse_csv_parallel_boundaries(input.as_slice());
+    Ok(boundaries_to_term_hybrid(env, input, boundaries, b'"'))
 }
 
 /// Parse CSV in parallel with configurable separator(s), escape, and newlines
@@ -523,30 +485,9 @@ fn parse_string_parallel_with_config<'a>(
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
     let newlines = decode_newlines(newlines_term)?;
-    let bytes = input.as_slice();
-
-    if !newlines.is_default {
-        let rows = parse_csv_parallel_general_with_newlines(
-            bytes,
-            &separators.patterns,
-            &escape.bytes,
-            &newlines,
-        );
-        return Ok(owned_rows_to_term(env, rows));
-    }
-
-    let rows = if is_all_single_byte(&separators, &escape) {
-        let esc = escape.bytes[0];
-        let sep_bytes = single_byte_seps(&separators);
-        if sep_bytes.len() == 1 {
-            parse_csv_parallel_with_config(bytes, sep_bytes[0], esc)
-        } else {
-            parse_csv_parallel_multi_sep(bytes, &sep_bytes, esc)
-        }
-    } else {
-        parse_csv_parallel_general(bytes, &separators.patterns, &escape.bytes)
-    };
-    Ok(owned_rows_to_term(env, rows))
+    let boundaries =
+        dispatch_parallel_boundary_parse(input.as_slice(), &separators, &escape, &newlines);
+    Ok(dispatch_boundaries_to_term(env, input, boundaries, &escape))
 }
 
 // ============================================================================
@@ -614,8 +555,6 @@ fn parse_string_zero_copy_with_config<'a>(
 // Headers-to-Maps NIFs
 // ============================================================================
 
-use rustler::types::ListIterator;
-
 /// Header mode: either auto (first row = keys) or explicit key terms
 enum HeaderMode<'a> {
     Auto,
@@ -642,73 +581,118 @@ fn decode_header_mode<'a>(header_mode: Term<'a>) -> NifResult<HeaderMode<'a>> {
     Err(Error::BadArg)
 }
 
-/// Convert a Cow field to a binary term (for building key terms from first row)
-fn cow_field_to_binary_term<'a>(env: Env<'a>, field: &[u8]) -> Term<'a> {
-    let bytes = field;
-    let mut binary = NewBinary::new(env, bytes.len());
-    binary.as_mut_slice().copy_from_slice(bytes);
-    binary.into()
-}
-
-/// Dispatch to Cow-returning parser based on strategy string
-fn dispatch_cow_parse<'a>(
-    bytes: &'a [u8],
+/// Dispatch to boundary-returning parser based on separator/escape/newlines config
+fn dispatch_boundary_parse(
+    bytes: &[u8],
     separators: &Separators,
     escape: &Escape,
     newlines: &Newlines,
-    strategy: &str,
-) -> Vec<Vec<Cow<'a, [u8]>>> {
+) -> Vec<Vec<(usize, usize)>> {
     if !newlines.is_default {
-        return match strategy {
-            "basic" | "simd" => parse_csv_general_with_newlines(
-                bytes,
-                &separators.patterns,
-                &escape.bytes,
-                newlines,
-            ),
-            "indexed" => parse_csv_indexed_general_with_newlines(
-                bytes,
-                &separators.patterns,
-                &escape.bytes,
-                newlines,
-            ),
-            _ => unreachable!(),
-        };
+        return parse_csv_boundaries_general_with_newlines(
+            bytes,
+            &separators.patterns,
+            &escape.bytes,
+            newlines,
+        );
     }
-
     if is_all_single_byte(separators, escape) {
         let esc = escape.bytes[0];
         let sep_bytes = single_byte_seps(separators);
-        match strategy {
-            "basic" => {
-                if sep_bytes.len() == 1 {
-                    parse_csv_with_config(bytes, sep_bytes[0], esc)
-                } else {
-                    parse_csv_multi_sep(bytes, &sep_bytes, esc)
-                }
-            }
-            "simd" => {
-                if sep_bytes.len() == 1 {
-                    parse_csv_fast_with_config(bytes, sep_bytes[0], esc)
-                } else {
-                    parse_csv_fast_multi_sep(bytes, &sep_bytes, esc)
-                }
-            }
-            "indexed" => {
-                if sep_bytes.len() == 1 {
-                    parse_csv_indexed_with_config(bytes, sep_bytes[0], esc)
-                } else {
-                    parse_csv_indexed_multi_sep(bytes, &sep_bytes, esc)
-                }
-            }
-            _ => unreachable!(),
+        if sep_bytes.len() == 1 {
+            parse_csv_boundaries_with_config(bytes, sep_bytes[0], esc)
+        } else {
+            parse_csv_boundaries_multi_sep(bytes, &sep_bytes, esc)
         }
     } else {
-        match strategy {
-            "basic" | "simd" => parse_csv_general(bytes, &separators.patterns, &escape.bytes),
-            "indexed" => parse_csv_indexed_general(bytes, &separators.patterns, &escape.bytes),
-            _ => unreachable!(),
-        }
+        parse_csv_boundaries_general(bytes, &separators.patterns, &escape.bytes)
+    }
+}
+
+/// Dispatch between single-byte and general escape for term construction
+fn dispatch_boundaries_to_term<'a>(
+    env: Env<'a>,
+    input: Binary<'a>,
+    boundaries: Vec<Vec<(usize, usize)>>,
+    escape: &Escape,
+) -> Term<'a> {
+    if escape.bytes.len() == 1 {
+        boundaries_to_term_hybrid(env, input, boundaries, escape.bytes[0])
+    } else {
+        boundaries_to_term_hybrid_general(env, input, boundaries, &escape.bytes)
+    }
+}
+
+/// Dispatch between single-byte and general escape for maps construction
+fn dispatch_boundaries_to_maps<'a>(
+    env: Env<'a>,
+    input: Binary<'a>,
+    keys: &[Term<'a>],
+    boundaries: &[Vec<(usize, usize)>],
+    escape: &Escape,
+) -> Term<'a> {
+    if escape.bytes.len() == 1 {
+        boundaries_to_maps_hybrid(env, input, keys, boundaries, escape.bytes[0])
+    } else {
+        boundaries_to_maps_hybrid_general(env, input, keys, boundaries, &escape.bytes)
+    }
+}
+
+/// Extract header row from boundaries into key terms
+fn boundary_row_to_key_terms<'a>(
+    env: Env<'a>,
+    input: &Binary<'a>,
+    row: &[(usize, usize)],
+    escape: &Escape,
+) -> Vec<Term<'a>> {
+    let input_bytes = input.as_slice();
+    if escape.bytes.len() == 1 {
+        let esc = escape.bytes[0];
+        row.iter()
+            .map(|&(start, end)| {
+                let field = &input_bytes[start..end];
+                let content =
+                    if field.len() >= 2 && field[0] == esc && field[field.len() - 1] == esc {
+                        let inner = &field[1..field.len() - 1];
+                        if inner.contains(&esc) {
+                            term::unescape_field(inner, esc)
+                        } else {
+                            inner.to_vec()
+                        }
+                    } else {
+                        field.to_vec()
+                    };
+                let mut binary = NewBinary::new(env, content.len());
+                binary.as_mut_slice().copy_from_slice(&content);
+                let t: Term = binary.into();
+                t
+            })
+            .collect()
+    } else {
+        let esc = &escape.bytes;
+        let esc_len = esc.len();
+        row.iter()
+            .map(|&(start, end)| {
+                let field = &input_bytes[start..end];
+                let content = if field.len() >= 2 * esc_len
+                    && field[..esc_len] == *esc.as_slice()
+                    && field[field.len() - esc_len..] == *esc.as_slice()
+                {
+                    let inner = &field[esc_len..field.len() - esc_len];
+                    if contains_escape(inner, esc) {
+                        unescape_field_general(inner, esc)
+                    } else {
+                        inner.to_vec()
+                    }
+                } else {
+                    field.to_vec()
+                };
+                let mut binary = NewBinary::new(env, content.len());
+                binary.as_mut_slice().copy_from_slice(&content);
+                let t: Term = binary.into();
+                t
+            })
+            .collect()
     }
 }
 
@@ -733,204 +717,33 @@ fn parse_to_maps<'a>(
     let bytes = input.as_slice();
 
     match strategy_str.as_str() {
-        "basic" | "simd" | "indexed" => {
-            let all_rows =
-                dispatch_cow_parse(bytes, &separators, &escape, &newlines, &strategy_str);
-            if all_rows.is_empty() {
+        "basic" | "simd" | "indexed" | "zero_copy" => {
+            let all_boundaries = dispatch_boundary_parse(bytes, &separators, &escape, &newlines);
+            if all_boundaries.is_empty() {
                 return Ok(Term::list_new_empty(env));
             }
 
             match header_mode {
                 HeaderMode::Auto => {
-                    // First row = keys
-                    let key_terms: Vec<Term<'a>> = all_rows[0]
-                        .iter()
-                        .map(|f| cow_field_to_binary_term(env, f.as_ref()))
-                        .collect();
-                    Ok(cow_rows_to_maps(env, &key_terms, &all_rows[1..]))
+                    let key_terms =
+                        boundary_row_to_key_terms(env, &input, &all_boundaries[0], &escape);
+                    Ok(dispatch_boundaries_to_maps(
+                        env,
+                        input,
+                        &key_terms,
+                        &all_boundaries[1..],
+                        &escape,
+                    ))
                 }
                 HeaderMode::Explicit(key_terms) => {
                     let start = if skip_first { 1 } else { 0 };
-                    Ok(cow_rows_to_maps(env, &key_terms, &all_rows[start..]))
-                }
-            }
-        }
-        "zero_copy" => {
-            if !newlines.is_default {
-                // Custom newlines: use general boundaries with newlines
-                let all_boundaries = parse_csv_boundaries_general_with_newlines(
-                    bytes,
-                    &separators.patterns,
-                    &escape.bytes,
-                    &newlines,
-                );
-
-                if all_boundaries.is_empty() {
-                    return Ok(Term::list_new_empty(env));
-                }
-
-                match header_mode {
-                    HeaderMode::Auto => {
-                        let input_bytes = input.as_slice();
-                        let esc = &escape.bytes;
-                        let esc_len = esc.len();
-                        let key_terms: Vec<Term<'a>> = all_boundaries[0]
-                            .iter()
-                            .map(|&(start, end)| {
-                                let field = &input_bytes[start..end];
-                                let content = if field.len() >= 2 * esc_len
-                                    && field[..esc_len] == *esc.as_slice()
-                                    && field[field.len() - esc_len..] == *esc.as_slice()
-                                {
-                                    let inner = &field[esc_len..field.len() - esc_len];
-                                    if contains_escape(inner, esc) {
-                                        unescape_field_general(inner, esc)
-                                    } else {
-                                        inner.to_vec()
-                                    }
-                                } else {
-                                    field.to_vec()
-                                };
-                                let mut binary = NewBinary::new(env, content.len());
-                                binary.as_mut_slice().copy_from_slice(&content);
-                                let t: Term = binary.into();
-                                t
-                            })
-                            .collect();
-                        Ok(boundaries_to_maps_hybrid_general(
-                            env,
-                            input,
-                            &key_terms,
-                            &all_boundaries[1..],
-                            &escape.bytes,
-                        ))
-                    }
-                    HeaderMode::Explicit(key_terms) => {
-                        let start = if skip_first { 1 } else { 0 };
-                        Ok(boundaries_to_maps_hybrid_general(
-                            env,
-                            input,
-                            &key_terms,
-                            &all_boundaries[start..],
-                            &escape.bytes,
-                        ))
-                    }
-                }
-            } else if is_all_single_byte(&separators, &escape) {
-                let esc = escape.bytes[0];
-                let sep_bytes = single_byte_seps(&separators);
-                let all_boundaries = if sep_bytes.len() == 1 {
-                    parse_csv_boundaries_with_config(bytes, sep_bytes[0], esc)
-                } else {
-                    parse_csv_boundaries_multi_sep(bytes, &sep_bytes, esc)
-                };
-
-                if all_boundaries.is_empty() {
-                    return Ok(Term::list_new_empty(env));
-                }
-
-                match header_mode {
-                    HeaderMode::Auto => {
-                        // Extract first row as key strings (must copy)
-                        let input_bytes = input.as_slice();
-                        let key_terms: Vec<Term<'a>> = all_boundaries[0]
-                            .iter()
-                            .map(|&(start, end)| {
-                                let field = &input_bytes[start..end];
-                                // Strip quotes if present
-                                let content = if field.len() >= 2
-                                    && field[0] == esc
-                                    && field[field.len() - 1] == esc
-                                {
-                                    let inner = &field[1..field.len() - 1];
-                                    if inner.contains(&esc) {
-                                        term::unescape_field(inner, esc)
-                                    } else {
-                                        inner.to_vec()
-                                    }
-                                } else {
-                                    field.to_vec()
-                                };
-                                let mut binary = NewBinary::new(env, content.len());
-                                binary.as_mut_slice().copy_from_slice(&content);
-                                let t: Term = binary.into();
-                                t
-                            })
-                            .collect();
-                        Ok(boundaries_to_maps_hybrid(
-                            env,
-                            input,
-                            &key_terms,
-                            &all_boundaries[1..],
-                            esc,
-                        ))
-                    }
-                    HeaderMode::Explicit(key_terms) => {
-                        let start = if skip_first { 1 } else { 0 };
-                        Ok(boundaries_to_maps_hybrid(
-                            env,
-                            input,
-                            &key_terms,
-                            &all_boundaries[start..],
-                            esc,
-                        ))
-                    }
-                }
-            } else {
-                // Multi-byte escape zero_copy
-                let all_boundaries =
-                    parse_csv_boundaries_general(bytes, &separators.patterns, &escape.bytes);
-
-                if all_boundaries.is_empty() {
-                    return Ok(Term::list_new_empty(env));
-                }
-
-                match header_mode {
-                    HeaderMode::Auto => {
-                        let input_bytes = input.as_slice();
-                        let esc = &escape.bytes;
-                        let esc_len = esc.len();
-                        let key_terms: Vec<Term<'a>> = all_boundaries[0]
-                            .iter()
-                            .map(|&(start, end)| {
-                                let field = &input_bytes[start..end];
-                                let content = if field.len() >= 2 * esc_len
-                                    && field[..esc_len] == *esc.as_slice()
-                                    && field[field.len() - esc_len..] == *esc.as_slice()
-                                {
-                                    let inner = &field[esc_len..field.len() - esc_len];
-                                    if contains_escape(inner, esc) {
-                                        unescape_field_general(inner, esc)
-                                    } else {
-                                        inner.to_vec()
-                                    }
-                                } else {
-                                    field.to_vec()
-                                };
-                                let mut binary = NewBinary::new(env, content.len());
-                                binary.as_mut_slice().copy_from_slice(&content);
-                                let t: Term = binary.into();
-                                t
-                            })
-                            .collect();
-                        Ok(boundaries_to_maps_hybrid_general(
-                            env,
-                            input,
-                            &key_terms,
-                            &all_boundaries[1..],
-                            &escape.bytes,
-                        ))
-                    }
-                    HeaderMode::Explicit(key_terms) => {
-                        let start = if skip_first { 1 } else { 0 };
-                        Ok(boundaries_to_maps_hybrid_general(
-                            env,
-                            input,
-                            &key_terms,
-                            &all_boundaries[start..],
-                            &escape.bytes,
-                        ))
-                    }
+                    Ok(dispatch_boundaries_to_maps(
+                        env,
+                        input,
+                        &key_terms,
+                        &all_boundaries[start..],
+                        &escape,
+                    ))
                 }
             }
         }
@@ -955,44 +768,32 @@ fn parse_to_maps_parallel<'a>(
     let header_mode = decode_header_mode(header_mode_term)?;
     let bytes = input.as_slice();
 
-    let all_rows = if !newlines.is_default {
-        parse_csv_parallel_general_with_newlines(
-            bytes,
-            &separators.patterns,
-            &escape.bytes,
-            &newlines,
-        )
-    } else if is_all_single_byte(&separators, &escape) {
-        let esc = escape.bytes[0];
-        let sep_bytes = single_byte_seps(&separators);
-        if sep_bytes.len() == 1 {
-            parse_csv_parallel_with_config(bytes, sep_bytes[0], esc)
-        } else {
-            parse_csv_parallel_multi_sep(bytes, &sep_bytes, esc)
-        }
-    } else {
-        parse_csv_parallel_general(bytes, &separators.patterns, &escape.bytes)
-    };
+    let all_boundaries = dispatch_parallel_boundary_parse(bytes, &separators, &escape, &newlines);
 
-    if all_rows.is_empty() {
+    if all_boundaries.is_empty() {
         return Ok(Term::list_new_empty(env));
     }
 
     match header_mode {
         HeaderMode::Auto => {
-            let key_terms: Vec<Term<'a>> = all_rows[0]
-                .iter()
-                .map(|f| {
-                    let mut binary = NewBinary::new(env, f.len());
-                    binary.as_mut_slice().copy_from_slice(f);
-                    binary.into()
-                })
-                .collect();
-            Ok(owned_rows_to_maps(env, &key_terms, &all_rows[1..]))
+            let key_terms = boundary_row_to_key_terms(env, &input, &all_boundaries[0], &escape);
+            Ok(dispatch_boundaries_to_maps(
+                env,
+                input,
+                &key_terms,
+                &all_boundaries[1..],
+                &escape,
+            ))
         }
         HeaderMode::Explicit(key_terms) => {
             let start = if skip_first { 1 } else { 0 };
-            Ok(owned_rows_to_maps(env, &key_terms, &all_rows[start..]))
+            Ok(dispatch_boundaries_to_maps(
+                env,
+                input,
+                &key_terms,
+                &all_boundaries[start..],
+                &escape,
+            ))
         }
     }
 }
@@ -1000,18 +801,6 @@ fn parse_to_maps_parallel<'a>(
 // ============================================================================
 // Encoding NIFs
 // ============================================================================
-
-/// Helper: decode a list of rows (list of lists of binaries) from an Elixir term.
-/// Returns a nested Vec structure that borrows from the input binaries.
-fn decode_rows<'a>(term: Term<'a>) -> NifResult<Vec<Vec<Binary<'a>>>> {
-    let row_list: Vec<Term<'a>> = term.decode().map_err(|_| Error::BadArg)?;
-    let mut rows = Vec::with_capacity(row_list.len());
-    for row_term in row_list {
-        let fields: Vec<Binary<'a>> = row_term.decode().map_err(|_| Error::BadArg)?;
-        rows.push(fields);
-    }
-    Ok(rows)
-}
 
 /// Decode line_separator from a Term. Accepts binary or atom :default → "\n"
 fn decode_line_separator<'a>(term: Term<'a>) -> NifResult<Vec<u8>> {
@@ -1027,14 +816,146 @@ fn decode_line_separator<'a>(term: Term<'a>) -> NifResult<Vec<u8>> {
     Err(Error::BadArg)
 }
 
-/// Encode rows to CSV using SIMD-accelerated scanning.
+// ============================================================================
+// Formula Escaping + Encoding Target
+// ============================================================================
+
+use strategy::encoding::EncodingTarget;
+
+/// Configuration for formula injection prevention.
+/// Each rule maps a trigger byte (first byte of a field) to a replacement prefix.
+struct FormulaConfig {
+    rules: Vec<(u8, Vec<u8>)>,
+}
+
+impl FormulaConfig {
+    fn none() -> Self {
+        FormulaConfig { rules: Vec::new() }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    /// Check if a field's first byte triggers a formula rule.
+    /// Returns the replacement prefix if triggered, None otherwise.
+    #[inline(always)]
+    fn check(&self, field: &[u8]) -> Option<&[u8]> {
+        if field.is_empty() {
+            return None;
+        }
+        let first = field[0];
+        for (trigger, replacement) in &self.rules {
+            if first == *trigger {
+                return Some(replacement);
+            }
+        }
+        None
+    }
+}
+
+/// Decode formula config from an Elixir term.
+/// - `nil` atom → FormulaConfig::none()
+/// - list of `{byte, binary}` tuples → FormulaConfig with rules
+fn decode_formula_config<'a>(term: Term<'a>) -> NifResult<FormulaConfig> {
+    // Check for nil atom
+    if let Ok(s) = term.atom_to_string() {
+        if s == "nil" {
+            return Ok(FormulaConfig::none());
+        }
+        return Err(Error::BadArg);
+    }
+
+    // Decode as list of {integer, binary} tuples
+    let list: ListIterator<'a> = term.decode().map_err(|_| Error::BadArg)?;
+    let mut rules = Vec::new();
+    for item in list {
+        let tuple = rustler::types::tuple::get_tuple(item).map_err(|_| Error::BadArg)?;
+        if tuple.len() != 2 {
+            return Err(Error::BadArg);
+        }
+        let trigger: u8 = tuple[0].decode().map_err(|_| Error::BadArg)?;
+        let replacement: Binary<'a> = tuple[1].decode().map_err(|_| Error::BadArg)?;
+        rules.push((trigger, replacement.as_slice().to_vec()));
+    }
+    Ok(FormulaConfig { rules })
+}
+
+/// Decode encoding target from an Elixir term.
+/// - `:utf8` → EncodingTarget::Utf8
+/// - `:latin1` → EncodingTarget::Latin1
+/// - `{:utf16, :little}` → EncodingTarget::Utf16Le
+/// - `{:utf16, :big}` → EncodingTarget::Utf16Be
+/// - `{:utf32, :little}` → EncodingTarget::Utf32Le
+/// - `{:utf32, :big}` → EncodingTarget::Utf32Be
+fn decode_encoding_target(term: Term) -> NifResult<EncodingTarget> {
+    // Try atom
+    if let Ok(s) = term.atom_to_string() {
+        return match s.as_str() {
+            "utf8" => Ok(EncodingTarget::Utf8),
+            "latin1" => Ok(EncodingTarget::Latin1),
+            _ => Err(Error::BadArg),
+        };
+    }
+
+    // Try tuple {atom, atom}
+    let tuple = rustler::types::tuple::get_tuple(term).map_err(|_| Error::BadArg)?;
+    if tuple.len() != 2 {
+        return Err(Error::BadArg);
+    }
+    let enc = tuple[0].atom_to_string().map_err(|_| Error::BadArg)?;
+    let endian = tuple[1].atom_to_string().map_err(|_| Error::BadArg)?;
+
+    match (enc.as_str(), endian.as_str()) {
+        ("utf16", "little") => Ok(EncodingTarget::Utf16Le),
+        ("utf16", "big") => Ok(EncodingTarget::Utf16Be),
+        ("utf32", "little") => Ok(EncodingTarget::Utf32Le),
+        ("utf32", "big") => Ok(EncodingTarget::Utf32Be),
+        _ => Err(Error::BadArg),
+    }
+}
+
+/// Post-processing mode for encoding. Determines what extra work is needed
+/// beyond basic CSV field quoting.
+enum PostProcess {
+    /// UTF-8, no formula escaping (current fast path — identical behavior)
+    None,
+    /// UTF-8 + formula escaping
+    FormulaOnly(FormulaConfig),
+    /// Non-UTF-8, no formula escaping
+    EncodingOnly(EncodingTarget),
+    /// Both formula escaping and non-UTF-8 encoding
+    Full(FormulaConfig, EncodingTarget),
+}
+
+impl PostProcess {
+    fn from(formula: FormulaConfig, encoding: EncodingTarget) -> Self {
+        match (formula.is_empty(), encoding) {
+            (true, EncodingTarget::Utf8) => PostProcess::None,
+            (false, EncodingTarget::Utf8) => PostProcess::FormulaOnly(formula),
+            (true, enc) => PostProcess::EncodingOnly(enc),
+            (false, enc) => PostProcess::Full(formula, enc),
+        }
+    }
+}
+
+/// Encode rows to CSV, returning flat iodata (a single Erlang list).
 ///
-/// Uses portable_simd for 16/32-byte vectorized scanning of characters that
-/// need escaping. On platforms without SIMD hardware, portable_simd
-/// automatically degrades to scalar operations.
+/// Architecture: builds one flat iolist `[f1, sep, f2, nl, f3, sep, f4, nl, ...]`
+/// using a single `Vec<Term>` for all elements across all rows. This eliminates:
+/// - Per-row Vec allocations (was N allocations, now 1)
+/// - Nested row sublists (was N inner lists + 1 outer, now 1 flat list)
+/// - Per-row list_new_empty + list_prepend overhead
 ///
-/// Falls back to the general (multi-byte aware) encoder when separator or
-/// escape sequences are multi-byte.
+/// Clean fields are passed through as the original Term (zero copy).
+/// Only dirty fields needing quoting get a NewBinary allocation.
+/// Separator and newline use lightweight integer terms for single-byte values.
+///
+/// Formula escaping and non-UTF-8 encoding are handled via the PostProcess enum:
+/// - None: identical to previous behavior (zero overhead)
+/// - FormulaOnly: prefix triggered fields with replacement bytes
+/// - EncodingOnly: convert all output to target encoding
+/// - Full: both formula escaping and encoding conversion
 #[rustler::nif(schedule = "DirtyCpu")]
 fn encode_string<'a>(
     env: Env<'a>,
@@ -1042,39 +963,621 @@ fn encode_string<'a>(
     sep_term: Term<'a>,
     esc_term: Term<'a>,
     line_sep_term: Term<'a>,
+    formula_term: Term<'a>,
+    encoding_term: Term<'a>,
 ) -> NifResult<Term<'a>> {
-    let decoded_rows = decode_rows(rows_term)?;
     let separators = decode_separators(sep_term)?;
     let escape = decode_escape(esc_term)?;
     let line_separator = decode_line_separator(line_sep_term)?;
+    let formula = decode_formula_config(formula_term)?;
+    let encoding = decode_encoding_target(encoding_term)?;
+    let post = PostProcess::from(formula, encoding);
 
-    // Build field references for the encoder
-    let row_fields: Vec<Vec<&[u8]>> = decoded_rows
-        .iter()
-        .map(|row| row.iter().map(|f| f.as_slice()).collect())
-        .collect();
-    let row_slices: Vec<&[&[u8]]> = row_fields.iter().map(|r| r.as_slice()).collect();
+    let rows_iter: ListIterator<'a> = rows_term.decode().map_err(|_| Error::BadArg)?;
 
-    let output = if is_all_single_byte(&separators, &escape) {
+    match post {
+        PostProcess::None => {
+            encode_string_none(env, rows_iter, &separators, &escape, &line_separator)
+        }
+        PostProcess::FormulaOnly(formula) => encode_string_formula(
+            env,
+            rows_iter,
+            &separators,
+            &escape,
+            &line_separator,
+            &formula,
+        ),
+        PostProcess::EncodingOnly(target) => encode_string_encoding(
+            env,
+            rows_iter,
+            &separators,
+            &escape,
+            &line_separator,
+            target,
+        ),
+        PostProcess::Full(formula, target) => encode_string_full(
+            env,
+            rows_iter,
+            &separators,
+            &escape,
+            &line_separator,
+            &formula,
+            target,
+        ),
+    }
+}
+
+/// PostProcess::None — UTF-8, no formula.
+/// Flat Vec<u8> buffer → single NewBinary for minimal peak memory.
+fn encode_string_none<'a>(
+    env: Env<'a>,
+    rows_iter: ListIterator<'a>,
+    separators: &Separators,
+    escape: &Escape,
+    line_separator: &[u8],
+) -> NifResult<Term<'a>> {
+    use strategy::encode::{write_quoted_field, write_quoted_field_general};
+
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+
+    if is_all_single_byte(separators, escape) {
         let esc = escape.bytes[0];
-        let sep_bytes = single_byte_seps(&separators);
-        if sep_bytes.len() == 1 {
-            encode_csv_simd(&row_slices, sep_bytes[0], esc, &line_separator)
-        } else {
-            encode_csv_simd_multi_sep(&row_slices, &sep_bytes, esc, &line_separator)
+        let sep_bytes = single_byte_seps(separators);
+        let dump_sep = sep_bytes[0];
+        let multi_sep = sep_bytes.len() > 1;
+
+        for row_term in rows_iter {
+            let field_iter: ListIterator<'a> = row_term.decode().map_err(|_| Error::BadArg)?;
+            let mut first = true;
+            for field_term in field_iter {
+                if !first {
+                    buf.push(dump_sep);
+                }
+                first = false;
+                let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
+                let field_bytes = field_bin.as_slice();
+                let needs_quoting = if multi_sep {
+                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc)
+                } else {
+                    field_needs_quoting_simd(field_bytes, dump_sep, esc)
+                };
+                if needs_quoting {
+                    write_quoted_field(&mut buf, field_bytes, esc);
+                } else {
+                    buf.extend_from_slice(field_bytes);
+                }
+            }
+            buf.extend_from_slice(line_separator);
         }
     } else {
-        encode_csv_general(
-            &row_slices,
-            &separators.patterns[0],
-            &escape.bytes,
-            &line_separator,
-        )
+        let sep_pattern = &separators.patterns[0];
+        let esc_pattern = &escape.bytes;
+
+        for row_term in rows_iter {
+            let field_iter: ListIterator<'a> = row_term.decode().map_err(|_| Error::BadArg)?;
+            let mut first = true;
+            for field_term in field_iter {
+                if !first {
+                    buf.extend_from_slice(sep_pattern);
+                }
+                first = false;
+                let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
+                let field_bytes = field_bin.as_slice();
+                if field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern) {
+                    write_quoted_field_general(&mut buf, field_bytes, esc_pattern);
+                } else {
+                    buf.extend_from_slice(field_bytes);
+                }
+            }
+            buf.extend_from_slice(line_separator);
+        }
+    }
+
+    let mut new_bin = NewBinary::new(env, buf.len());
+    new_bin.as_mut_slice().copy_from_slice(&buf);
+    let bin_term: Term<'a> = new_bin.into();
+    Ok(vec![bin_term].encode(env))
+}
+
+/// PostProcess::FormulaOnly — UTF-8 + formula escaping.
+/// Flat Vec<u8> buffer → single NewBinary.
+///
+/// NimbleCSV semantics:
+/// - Formula triggered + clean field → prefix ++ field (no quotes)
+/// - Formula triggered + dirty field → esc ++ prefix ++ escaped_inner ++ esc
+fn encode_string_formula<'a>(
+    env: Env<'a>,
+    rows_iter: ListIterator<'a>,
+    separators: &Separators,
+    escape: &Escape,
+    line_separator: &[u8],
+    formula: &FormulaConfig,
+) -> NifResult<Term<'a>> {
+    use strategy::encode::{
+        write_quoted_field, write_quoted_field_general, write_quoted_field_inner,
+        write_quoted_field_inner_general,
     };
 
-    let mut binary = NewBinary::new(env, output.len());
-    binary.as_mut_slice().copy_from_slice(&output);
-    Ok(binary.into())
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+
+    if is_all_single_byte(separators, escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(separators);
+        let dump_sep = sep_bytes[0];
+        let multi_sep = sep_bytes.len() > 1;
+
+        for row_term in rows_iter {
+            let field_iter: ListIterator<'a> = row_term.decode().map_err(|_| Error::BadArg)?;
+            let mut first = true;
+            for field_term in field_iter {
+                if !first {
+                    buf.push(dump_sep);
+                }
+                first = false;
+                let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
+                let field_bytes = field_bin.as_slice();
+                let needs_quoting = if multi_sep {
+                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc)
+                } else {
+                    field_needs_quoting_simd(field_bytes, dump_sep, esc)
+                };
+
+                if let Some(prefix) = formula.check(field_bytes) {
+                    if needs_quoting {
+                        buf.push(esc);
+                        buf.extend_from_slice(prefix);
+                        write_quoted_field_inner(&mut buf, field_bytes, esc);
+                        buf.push(esc);
+                    } else {
+                        buf.extend_from_slice(prefix);
+                        buf.extend_from_slice(field_bytes);
+                    }
+                } else if needs_quoting {
+                    write_quoted_field(&mut buf, field_bytes, esc);
+                } else {
+                    buf.extend_from_slice(field_bytes);
+                }
+            }
+            buf.extend_from_slice(line_separator);
+        }
+    } else {
+        let sep_pattern = &separators.patterns[0];
+        let esc_pattern = &escape.bytes;
+
+        for row_term in rows_iter {
+            let field_iter: ListIterator<'a> = row_term.decode().map_err(|_| Error::BadArg)?;
+            let mut first = true;
+            for field_term in field_iter {
+                if !first {
+                    buf.extend_from_slice(sep_pattern);
+                }
+                first = false;
+                let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
+                let field_bytes = field_bin.as_slice();
+                let needs_quoting =
+                    field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern);
+
+                if let Some(prefix) = formula.check(field_bytes) {
+                    if needs_quoting {
+                        buf.extend_from_slice(esc_pattern);
+                        buf.extend_from_slice(prefix);
+                        write_quoted_field_inner_general(&mut buf, field_bytes, esc_pattern);
+                        buf.extend_from_slice(esc_pattern);
+                    } else {
+                        buf.extend_from_slice(prefix);
+                        buf.extend_from_slice(field_bytes);
+                    }
+                } else if needs_quoting {
+                    write_quoted_field_general(&mut buf, field_bytes, esc_pattern);
+                } else {
+                    buf.extend_from_slice(field_bytes);
+                }
+            }
+            buf.extend_from_slice(line_separator);
+        }
+    }
+
+    let mut new_bin = NewBinary::new(env, buf.len());
+    new_bin.as_mut_slice().copy_from_slice(&buf);
+    let bin_term: Term<'a> = new_bin.into();
+    Ok(vec![bin_term].encode(env))
+}
+
+/// PostProcess::EncodingOnly — non-UTF-8, no formula.
+/// Flat Vec<u8> buffer with scratch buffer for quoting → single NewBinary.
+fn encode_string_encoding<'a>(
+    env: Env<'a>,
+    rows_iter: ListIterator<'a>,
+    separators: &Separators,
+    escape: &Escape,
+    line_separator: &[u8],
+    target: EncodingTarget,
+) -> NifResult<Term<'a>> {
+    use strategy::encode::{write_quoted_field, write_quoted_field_general};
+    use strategy::encoding::encode_utf8_extend;
+
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    let mut scratch: Vec<u8> = Vec::with_capacity(256);
+
+    // Pre-encode separator and line_separator into buf-compatible bytes
+    let mut sep_encoded: Vec<u8> = Vec::new();
+    encode_utf8_extend(&mut sep_encoded, &separators.patterns[0], target);
+    let mut ls_encoded: Vec<u8> = Vec::new();
+    encode_utf8_extend(&mut ls_encoded, line_separator, target);
+
+    if is_all_single_byte(separators, escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(separators);
+        let dump_sep = sep_bytes[0];
+        let multi_sep = sep_bytes.len() > 1;
+
+        for row_term in rows_iter {
+            let field_iter: ListIterator<'a> = row_term.decode().map_err(|_| Error::BadArg)?;
+            let mut first = true;
+            for field_term in field_iter {
+                if !first {
+                    buf.extend_from_slice(&sep_encoded);
+                }
+                first = false;
+                let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
+                let field_bytes = field_bin.as_slice();
+                let needs_quoting = if multi_sep {
+                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc)
+                } else {
+                    field_needs_quoting_simd(field_bytes, dump_sep, esc)
+                };
+
+                let utf8_src: &[u8] = if needs_quoting {
+                    scratch.clear();
+                    write_quoted_field(&mut scratch, field_bytes, esc);
+                    &scratch
+                } else {
+                    field_bytes
+                };
+                encode_utf8_extend(&mut buf, utf8_src, target);
+            }
+            buf.extend_from_slice(&ls_encoded);
+        }
+    } else {
+        let sep_pattern = &separators.patterns[0];
+        let esc_pattern = &escape.bytes;
+
+        for row_term in rows_iter {
+            let field_iter: ListIterator<'a> = row_term.decode().map_err(|_| Error::BadArg)?;
+            let mut first = true;
+            for field_term in field_iter {
+                if !first {
+                    buf.extend_from_slice(&sep_encoded);
+                }
+                first = false;
+                let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
+                let field_bytes = field_bin.as_slice();
+
+                let utf8_src: &[u8] =
+                    if field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern) {
+                        scratch.clear();
+                        write_quoted_field_general(&mut scratch, field_bytes, esc_pattern);
+                        &scratch
+                    } else {
+                        field_bytes
+                    };
+                encode_utf8_extend(&mut buf, utf8_src, target);
+            }
+            buf.extend_from_slice(&ls_encoded);
+        }
+    }
+
+    let mut new_bin = NewBinary::new(env, buf.len());
+    new_bin.as_mut_slice().copy_from_slice(&buf);
+    let bin_term: Term<'a> = new_bin.into();
+    Ok(vec![bin_term].encode(env))
+}
+
+/// PostProcess::Full — both formula escaping and non-UTF-8 encoding.
+/// Flat Vec<u8> buffer with scratch buffer → single NewBinary.
+fn encode_string_full<'a>(
+    env: Env<'a>,
+    rows_iter: ListIterator<'a>,
+    separators: &Separators,
+    escape: &Escape,
+    line_separator: &[u8],
+    formula: &FormulaConfig,
+    target: EncodingTarget,
+) -> NifResult<Term<'a>> {
+    use strategy::encode::{
+        write_quoted_field, write_quoted_field_general, write_quoted_field_inner,
+        write_quoted_field_inner_general,
+    };
+    use strategy::encoding::encode_utf8_extend;
+
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    let mut scratch: Vec<u8> = Vec::with_capacity(256);
+
+    let mut sep_encoded: Vec<u8> = Vec::new();
+    encode_utf8_extend(&mut sep_encoded, &separators.patterns[0], target);
+    let mut ls_encoded: Vec<u8> = Vec::new();
+    encode_utf8_extend(&mut ls_encoded, line_separator, target);
+
+    if is_all_single_byte(separators, escape) {
+        let esc = escape.bytes[0];
+        let sep_bytes = single_byte_seps(separators);
+        let dump_sep = sep_bytes[0];
+        let multi_sep = sep_bytes.len() > 1;
+
+        for row_term in rows_iter {
+            let field_iter: ListIterator<'a> = row_term.decode().map_err(|_| Error::BadArg)?;
+            let mut first = true;
+            for field_term in field_iter {
+                if !first {
+                    buf.extend_from_slice(&sep_encoded);
+                }
+                first = false;
+                let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
+                let field_bytes = field_bin.as_slice();
+                let needs_quoting = if multi_sep {
+                    field_needs_quoting_simd_multi_sep(field_bytes, &sep_bytes, esc)
+                } else {
+                    field_needs_quoting_simd(field_bytes, dump_sep, esc)
+                };
+
+                if let Some(prefix) = formula.check(field_bytes) {
+                    if needs_quoting {
+                        // Dirty + formula: encoded_esc ++ raw_prefix ++ encoded_inner ++ encoded_esc
+                        encode_utf8_extend(&mut buf, &[esc], target);
+                        buf.extend_from_slice(prefix);
+                        scratch.clear();
+                        write_quoted_field_inner(&mut scratch, field_bytes, esc);
+                        encode_utf8_extend(&mut buf, &scratch, target);
+                        encode_utf8_extend(&mut buf, &[esc], target);
+                    } else {
+                        // Clean + formula: raw_prefix ++ encoded_field
+                        buf.extend_from_slice(prefix);
+                        encode_utf8_extend(&mut buf, field_bytes, target);
+                    }
+                } else {
+                    let utf8_src: &[u8] = if needs_quoting {
+                        scratch.clear();
+                        write_quoted_field(&mut scratch, field_bytes, esc);
+                        &scratch
+                    } else {
+                        field_bytes
+                    };
+                    encode_utf8_extend(&mut buf, utf8_src, target);
+                }
+            }
+            buf.extend_from_slice(&ls_encoded);
+        }
+    } else {
+        let sep_pattern = &separators.patterns[0];
+        let esc_pattern = &escape.bytes;
+
+        for row_term in rows_iter {
+            let field_iter: ListIterator<'a> = row_term.decode().map_err(|_| Error::BadArg)?;
+            let mut first = true;
+            for field_term in field_iter {
+                if !first {
+                    buf.extend_from_slice(&sep_encoded);
+                }
+                first = false;
+                let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
+                let field_bytes = field_bin.as_slice();
+                let needs_quoting =
+                    field_needs_quoting_general(field_bytes, sep_pattern, esc_pattern);
+
+                if let Some(prefix) = formula.check(field_bytes) {
+                    if needs_quoting {
+                        encode_utf8_extend(&mut buf, esc_pattern, target);
+                        buf.extend_from_slice(prefix);
+                        scratch.clear();
+                        write_quoted_field_inner_general(&mut scratch, field_bytes, esc_pattern);
+                        encode_utf8_extend(&mut buf, &scratch, target);
+                        encode_utf8_extend(&mut buf, esc_pattern, target);
+                    } else {
+                        buf.extend_from_slice(prefix);
+                        encode_utf8_extend(&mut buf, field_bytes, target);
+                    }
+                } else {
+                    let utf8_src: &[u8] = if needs_quoting {
+                        scratch.clear();
+                        write_quoted_field_general(&mut scratch, field_bytes, esc_pattern);
+                        &scratch
+                    } else {
+                        field_bytes
+                    };
+                    encode_utf8_extend(&mut buf, utf8_src, target);
+                }
+            }
+            buf.extend_from_slice(&ls_encoded);
+        }
+    }
+
+    let mut new_bin = NewBinary::new(env, buf.len());
+    new_bin.as_mut_slice().copy_from_slice(&buf);
+    let bin_term: Term<'a> = new_bin.into();
+    Ok(vec![bin_term].encode(env))
+}
+
+/// Encode rows to CSV in parallel using rayon, returning iodata (list of binaries).
+///
+/// Architecture:
+/// - Phase 1 (main thread): Walk Erlang lists, copy field bytes into owned Vecs
+/// - Phase 2 (rayon): Parallel CSV encoding — each chunk produces a flat Vec<u8>
+///   with formula prefixes applied. If encoding != UTF-8, convert entire chunk.
+/// - Phase 3 (main thread): Wrap each chunk as a NewBinary, return as iodata list
+///
+/// Only supports single-byte separator/escape (the common case for parallel workloads).
+/// Falls back to BadArg for multi-byte separator/escape — callers should use
+/// encode_string for those configurations.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn encode_string_parallel<'a>(
+    env: Env<'a>,
+    rows_term: Term<'a>,
+    sep_term: Term<'a>,
+    esc_term: Term<'a>,
+    line_sep_term: Term<'a>,
+    formula_term: Term<'a>,
+    encoding_term: Term<'a>,
+) -> NifResult<Term<'a>> {
+    use rayon::prelude::*;
+    use strategy::encode::{
+        field_needs_quoting_simd, write_quoted_field, write_quoted_field_inner,
+    };
+    use strategy::encoding::encode_utf8_to_target;
+    use strategy::parallel::{recommended_threads, run_parallel};
+
+    let separators = decode_separators(sep_term)?;
+    let escape = decode_escape(esc_term)?;
+    let line_separator = decode_line_separator(line_sep_term)?;
+    let formula = decode_formula_config(formula_term)?;
+    let encoding = decode_encoding_target(encoding_term)?;
+
+    // Only support single-byte sep/esc for the parallel path
+    if !is_all_single_byte(&separators, &escape) {
+        return Err(Error::BadArg);
+    }
+
+    let esc = escape.bytes[0];
+    let dump_sep = single_byte_seps(&separators)[0];
+    let has_formula = !formula.is_empty();
+    let needs_encoding = encoding != EncodingTarget::Utf8;
+
+    // Clone formula rules into an Arc for sharing across rayon threads
+    let formula_rules: Vec<(u8, Vec<u8>)> = formula.rules;
+
+    // Phase 1: Extract all field data into owned Rust structures (main thread)
+    let rows_iter: ListIterator<'a> = rows_term.decode().map_err(|_| Error::BadArg)?;
+    let mut all_rows: Vec<Vec<Vec<u8>>> = Vec::new();
+
+    for row_term in rows_iter {
+        let field_iter: ListIterator<'a> = row_term.decode().map_err(|_| Error::BadArg)?;
+        let mut row_fields: Vec<Vec<u8>> = Vec::new();
+        for field_term in field_iter {
+            let field_bin: Binary<'a> = field_term.decode().map_err(|_| Error::BadArg)?;
+            row_fields.push(field_bin.as_slice().to_vec());
+        }
+        all_rows.push(row_fields);
+    }
+
+    if all_rows.is_empty() {
+        return Ok(Term::list_new_empty(env));
+    }
+
+    // Phase 2: Parallel CSV encoding via rayon
+    let chunk_size = (all_rows.len() / recommended_threads()).max(256);
+
+    // Pre-encode separator and line_separator for non-UTF-8
+    let sep_bytes_encoded: Vec<u8> = if needs_encoding {
+        encode_utf8_to_target(&[dump_sep], encoding)
+    } else {
+        vec![dump_sep]
+    };
+    let ls_encoded: Vec<u8> = if needs_encoding {
+        encode_utf8_to_target(&line_separator, encoding)
+    } else {
+        line_separator.clone()
+    };
+
+    let chunks: Vec<Vec<u8>> = run_parallel(|| {
+        all_rows
+            .par_chunks(chunk_size)
+            .map(|chunk_rows| {
+                let mut out = Vec::with_capacity(chunk_rows.len() * 128);
+                for row in chunk_rows {
+                    for (i, field) in row.iter().enumerate() {
+                        if i > 0 {
+                            if needs_encoding {
+                                out.extend_from_slice(&sep_bytes_encoded);
+                            } else {
+                                out.push(dump_sep);
+                            }
+                        }
+
+                        // Check formula trigger
+                        let formula_prefix: Option<&[u8]> = if has_formula && !field.is_empty() {
+                            let first = field[0];
+                            formula_rules
+                                .iter()
+                                .find(|(trigger, _)| *trigger == first)
+                                .map(|(_, replacement)| replacement.as_slice())
+                        } else {
+                            None
+                        };
+
+                        let needs_quoting = field_needs_quoting_simd(field, dump_sep, esc);
+
+                        if let Some(prefix) = formula_prefix {
+                            if needs_quoting {
+                                if needs_encoding {
+                                    // [encoded_esc, raw_prefix, encoded_inner, encoded_esc]
+                                    let encoded_esc = encode_utf8_to_target(&[esc], encoding);
+                                    let mut inner_buf = Vec::with_capacity(field.len() + 8);
+                                    write_quoted_field_inner(&mut inner_buf, field, esc);
+                                    let encoded_inner = encode_utf8_to_target(&inner_buf, encoding);
+                                    out.extend_from_slice(&encoded_esc);
+                                    out.extend_from_slice(prefix);
+                                    out.extend_from_slice(&encoded_inner);
+                                    out.extend_from_slice(&encoded_esc);
+                                } else {
+                                    // FormulaOnly: prefix inside quotes
+                                    let mut result =
+                                        Vec::with_capacity(1 + prefix.len() + field.len() + 8);
+                                    result.push(esc);
+                                    result.extend_from_slice(prefix);
+                                    write_quoted_field_inner(&mut result, field, esc);
+                                    result.push(esc);
+                                    out.extend_from_slice(&result);
+                                }
+                            } else if needs_encoding {
+                                // Clean + formula + encoding: prefix raw, field encoded
+                                out.extend_from_slice(prefix);
+                                let encoded = encode_utf8_to_target(field, encoding);
+                                out.extend_from_slice(&encoded);
+                            } else {
+                                // Clean + formula, no encoding
+                                out.extend_from_slice(prefix);
+                                out.extend_from_slice(field);
+                            }
+                            continue;
+                        }
+
+                        let utf8_field: Vec<u8> = if needs_quoting {
+                            let mut buf = Vec::with_capacity(field.len() + 8);
+                            write_quoted_field(&mut buf, field, esc);
+                            buf
+                        } else if needs_encoding {
+                            field.clone()
+                        } else {
+                            // No formula, no quoting, no encoding — direct extend
+                            out.extend_from_slice(field);
+                            continue;
+                        };
+
+                        if needs_encoding {
+                            let encoded = encode_utf8_to_target(&utf8_field, encoding);
+                            out.extend_from_slice(&encoded);
+                        } else {
+                            out.extend_from_slice(&utf8_field);
+                        }
+                    }
+                    out.extend_from_slice(&ls_encoded);
+                }
+                out
+            })
+            .collect()
+    });
+
+    // Phase 3: Build iodata from chunk results
+    let chunk_terms: Vec<Term<'a>> = chunks
+        .into_iter()
+        .map(|chunk| {
+            let mut new_bin = NewBinary::new(env, chunk.len());
+            new_bin.as_mut_slice().copy_from_slice(&chunk);
+            let t: Term<'a> = new_bin.into();
+            t
+        })
+        .collect();
+
+    Ok(chunk_terms.encode(env))
 }
 
 // ============================================================================

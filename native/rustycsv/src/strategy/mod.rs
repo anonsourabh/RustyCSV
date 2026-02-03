@@ -2,6 +2,7 @@
 
 pub mod direct;
 pub mod encode;
+pub mod encoding;
 pub mod general;
 pub mod parallel;
 pub mod streaming;

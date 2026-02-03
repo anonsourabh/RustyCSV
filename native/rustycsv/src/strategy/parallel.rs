@@ -193,6 +193,127 @@ pub fn parse_csv_parallel_multi_sep(
     })
 }
 
+// ============================================================================
+// Parallel Boundary Extraction (returns (start, end) pairs, no field copying)
+// ============================================================================
+
+/// Parse CSV in parallel, returning field boundaries (zero-copy)
+pub fn parse_csv_parallel_boundaries(input: &[u8]) -> Vec<Vec<(usize, usize)>> {
+    parse_csv_parallel_boundaries_with_config(input, b',', b'"')
+}
+
+/// Parse CSV in parallel with configurable separator and escape, returning boundaries
+pub fn parse_csv_parallel_boundaries_with_config(
+    input: &[u8],
+    separator: u8,
+    escape: u8,
+) -> Vec<Vec<(usize, usize)>> {
+    // Phase 1: SIMD structural scan → row boundaries + field separator positions
+    let idx = scan_structural(input, &[separator], escape);
+    let field_seps: &[u32] = &idx.field_seps;
+
+    // Phase 2: O(n) cursor walk — map each row to its slice of field_seps
+    let mut row_ranges: Vec<(u32, u32, usize, usize)> = Vec::with_capacity(idx.row_count());
+    let mut sep_cursor: usize = 0;
+    for (rs, re, _next) in idx.rows() {
+        let sep_start = sep_cursor;
+        while sep_cursor < field_seps.len() && field_seps[sep_cursor] < re {
+            sep_cursor += 1;
+        }
+        row_ranges.push((rs, re, sep_start, sep_cursor));
+    }
+
+    if row_ranges.is_empty() {
+        return Vec::new();
+    }
+
+    // Phase 3: Parallel boundary extraction — just push (start, end) tuples
+    run_parallel(|| {
+        row_ranges
+            .into_par_iter()
+            .filter_map(|(rs, re, sep_lo, sep_hi)| {
+                let (row_start, content_end) = (rs as usize, re as usize);
+                if content_end <= row_start {
+                    return None;
+                }
+
+                let seps = &field_seps[sep_lo..sep_hi];
+                let mut fields = Vec::with_capacity(seps.len() + 1);
+                let mut pos = row_start;
+                for &sep_pos in seps {
+                    fields.push((pos, sep_pos as usize));
+                    pos = sep_pos as usize + 1;
+                }
+                fields.push((pos, content_end));
+
+                if fields.len() == 1 && fields[0].0 >= fields[0].1 {
+                    None
+                } else {
+                    Some(fields)
+                }
+            })
+            .collect()
+    })
+}
+
+/// Parse CSV in parallel with multiple separator support, returning boundaries
+pub fn parse_csv_parallel_boundaries_multi_sep(
+    input: &[u8],
+    separators: &[u8],
+    escape: u8,
+) -> Vec<Vec<(usize, usize)>> {
+    if separators.len() == 1 {
+        return parse_csv_parallel_boundaries_with_config(input, separators[0], escape);
+    }
+
+    // Phase 1: SIMD structural scan → row boundaries + field separator positions
+    let idx = scan_structural(input, separators, escape);
+    let field_seps: &[u32] = &idx.field_seps;
+
+    // Phase 2: O(n) cursor walk — map each row to its slice of field_seps
+    let mut row_ranges: Vec<(u32, u32, usize, usize)> = Vec::with_capacity(idx.row_count());
+    let mut sep_cursor: usize = 0;
+    for (rs, re, _next) in idx.rows() {
+        let sep_start = sep_cursor;
+        while sep_cursor < field_seps.len() && field_seps[sep_cursor] < re {
+            sep_cursor += 1;
+        }
+        row_ranges.push((rs, re, sep_start, sep_cursor));
+    }
+
+    if row_ranges.is_empty() {
+        return Vec::new();
+    }
+
+    // Phase 3: Parallel boundary extraction
+    run_parallel(|| {
+        row_ranges
+            .into_par_iter()
+            .filter_map(|(rs, re, sep_lo, sep_hi)| {
+                let (row_start, content_end) = (rs as usize, re as usize);
+                if content_end <= row_start {
+                    return None;
+                }
+
+                let seps = &field_seps[sep_lo..sep_hi];
+                let mut fields = Vec::with_capacity(seps.len() + 1);
+                let mut pos = row_start;
+                for &sep_pos in seps {
+                    fields.push((pos, sep_pos as usize));
+                    pos = sep_pos as usize + 1;
+                }
+                fields.push((pos, content_end));
+
+                if fields.len() == 1 && fields[0].0 >= fields[0].1 {
+                    None
+                } else {
+                    Some(fields)
+                }
+            })
+            .collect()
+    })
+}
+
 /// Configure rayon thread pool size based on system
 pub fn recommended_threads() -> usize {
     std::thread::available_parallelism()

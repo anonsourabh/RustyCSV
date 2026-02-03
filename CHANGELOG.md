@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-02-02
+
+Decoding and encoding overhaul. All batch decode strategies now use boundary-based sub-binaries (zero-copy for most fields). Encoding writes a single flat binary instead of an iodata list. **3.5–19x faster** decoding, **2.5–31x faster** encoding vs pure Elixir, with **5–14x less memory** for decoding.
+
+### Added
+
+- **Parallel encoding option** — `dump_to_iodata(rows, strategy: :parallel)` for quoting-heavy workloads
+- Encoding benchmarks (`bench/encode_bench.exs`)
+
+### Changed
+
+- **Boundary-based sub-binary decoding** — all batch strategies (`:simd`, `:basic`, `:indexed`, `:zero_copy`, `:parallel`) now parse field boundaries as `(start, end)` offset pairs, then create BEAM sub-binary references into the original input. Only fields requiring quote unescaping (`""` → `"`) are copied. Previously, `:simd`/`:basic`/`:indexed` used `Cow<[u8]>` (copying into `NewBinary` for every field) and `:parallel` double-copied (rayon workers via `to_vec()` + main thread via `NewBinary`).
+- **Parallel strategy: boundary extraction** — rayon workers now compute boundary pairs (pure index arithmetic) instead of copying field data. The main thread builds sub-binary terms. Eliminates the double-copy bottleneck that made `:parallel` slower than NimbleCSV on small/medium files.
+- **Flat binary encoding** — the encoding NIF now writes raw CSV bytes into a single binary instead of constructing an iodata list, reducing NIF peak memory 3–6x and BEAM-side allocation to 80 bytes
+
 ## [0.3.5] - 2026-02-02
 
 Zero `unsafe` in application code. No user-facing API changes.

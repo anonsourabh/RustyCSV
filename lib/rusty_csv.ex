@@ -72,18 +72,43 @@ defmodule RustyCSV do
       CSV.dump_to_iodata([["name", "age"], ["john", "27"]])
       #=> "name,age\njohn,27\n"
 
-  By default, encoding uses a SIMD-accelerated Rust NIF that scans 16–32
-  bytes at a time for characters requiring quoting. This is 93–178x faster
-  than the pure Elixir path. You can explicitly select the strategy:
+  Encoding uses a SIMD-accelerated Rust NIF that writes all CSV bytes into
+  a single flat binary. The NIF handles four modes: plain UTF-8, UTF-8 with
+  formula escaping, non-UTF-8 encoding, and both combined.
 
-      # Default: NIF encoding (when available)
+  > **Difference from NimbleCSV:** NimbleCSV's `dump_to_iodata/1` returns an
+  > iodata list (a nested list of small binaries) that callers typically flatten
+  > back into a single binary via `IO.iodata_to_binary/1` before writing to a
+  > file, sending as a download, or passing to an API. RustyCSV skips that
+  > roundtrip — it returns the final binary directly, ready for use with
+  > `IO.binwrite/2`, `Conn.send_resp/3`, `:gen_tcp.send/2`, `File.write/2`,
+  > etc. The output bytes are identical; there is nothing to traverse or flatten.
+  >
+  > Code that pattern-matches on the return value expecting a list will need
+  > adjustment. This is a deliberate trade-off: building an iodata list across
+  > the NIF boundary requires allocating one Erlang term per field, separator,
+  > and newline, which is 18–63% slower and uses 3–6x more NIF memory than
+  > returning the bytes directly.
+
+  ### Encoding Strategies
+
+  `dump_to_iodata/2` accepts a `:strategy` option:
+
+    * *default* (no option) — Single-threaded SIMD-accelerated encoder.
+      Writes all CSV bytes into a single flat binary. Best for most workloads.
+
+    * `:parallel` — Multi-threaded encoding via rayon. Copies all field data
+      into Rust-owned memory, splits rows into chunks, and encodes each chunk
+      on a separate thread. Returns a short list of large binaries. Best for
+      quoting-heavy data (user-generated content with embedded commas/quotes/newlines).
+
+  Example:
+
+      # Default (recommended for most cases)
       CSV.dump_to_iodata(rows)
 
-      # Force pure Elixir encoding
-      CSV.dump_to_iodata(rows, encode_strategy: :elixir)
-
-  NIF encoding is available for UTF-8 modules without `escape_formula`.
-  Other configurations automatically fall back to pure Elixir.
+      # Parallel (opt in for quoting-heavy data)
+      CSV.dump_to_iodata(rows, strategy: :parallel)
 
   ### High-Throughput Concurrent Exports
 
@@ -110,15 +135,17 @@ defmodule RustyCSV do
     * `parse_string/2` - Parse CSV string to list of rows
     * `parse_stream/2` - Lazily parse a stream
     * `parse_enumerable/2` - Parse any enumerable
-    * `dump_to_iodata/2` - Convert rows to iodata (with optional encoding strategy)
+    * `dump_to_iodata/2` - Convert rows to iodata (returns a flat binary, not an iodata list — see "Encoding" section)
     * `dump_to_stream/1` - Lazily convert rows to iodata stream
     * `to_line_stream/1` - Convert arbitrary chunks to lines
     * `options/0` - Return module configuration
 
-  RustyCSV extends NimbleCSV with two additional options:
+  RustyCSV extends NimbleCSV with additional options:
 
-    * `:strategy` - Select the parsing approach (`:simd`, `:basic`, `:indexed`,
-      `:parallel`, `:zero_copy`)
+    * `:strategy` on `parse_string/2` - Select the parsing approach (`:simd`,
+      `:basic`, `:indexed`, `:parallel`, `:zero_copy`)
+    * `:strategy` on `dump_to_iodata/2` - Select the encoding approach
+      (default or `:parallel`)
     * `:headers` - Return rows as maps instead of lists
 
   ## Headers-to-Maps
@@ -254,6 +281,9 @@ defmodule RustyCSV do
   @typedoc """
   Parsing strategy to use.
 
+  These strategies apply to `parse_string/2` and other parsing functions.
+  For encoding strategies, see `t:dump_options/0`.
+
   ## Available Strategies
 
     * `:simd` - SIMD-accelerated scanning via memchr (default, fastest for most files)
@@ -327,6 +357,18 @@ defmodule RustyCSV do
         ]
 
   @typedoc """
+  Options for `dump_to_iodata/2`.
+
+  ## Options
+
+    * `:strategy` - Encoding strategy to use. Defaults to the single-threaded
+      SIMD-accelerated encoder (no option needed). Pass `:parallel` for
+      multi-threaded encoding via rayon, which is faster for quoting-heavy data.
+
+  """
+  @type dump_options :: [strategy: :parallel]
+
+  @typedoc """
   Encoding for CSV data.
 
   Supported encodings:
@@ -360,6 +402,8 @@ defmodule RustyCSV do
     * `:dump_bom` - Include BOM in output. Defaults to `false`.
     * `:reserved` - Additional characters requiring escaping.
     * `:escape_formula` - Map for formula injection prevention. Defaults to `nil`.
+      When set, fields starting with trigger characters are prefixed with a
+      replacement string inside quotes. Handled natively in the Rust NIF.
 
   ## Other Options
 
@@ -442,17 +486,20 @@ defmodule RustyCSV do
   @doc """
   Converts rows to iodata in CSV format.
 
+  Returns a single flat binary (not an iodata list). A binary is valid
+  `t:iodata/0`, so it works with `IO.binwrite/2`, `IO.iodata_to_binary/1`,
+  etc. See "Encoding (Dumping)" in the module doc for details on how this
+  differs from NimbleCSV.
+
   ## Options
 
-    * `:encode_strategy` - Encoding strategy to use:
-      * `:nif` — SIMD-accelerated NIF encoding (default when available)
-      * `:elixir` — Pure Elixir encoding
+    * `:strategy` - Encoding strategy. Defaults to the single-threaded
+      SIMD-accelerated encoder. Pass `:parallel` for multi-threaded encoding
+      via rayon, which is faster for quoting-heavy data.
 
-  NIF encoding is automatically available for UTF-8 modules without
-  `escape_formula`. Other configurations fall back to pure Elixir.
   """
   @callback dump_to_iodata(Enumerable.t()) :: iodata()
-  @callback dump_to_iodata(Enumerable.t(), keyword()) :: iodata()
+  @callback dump_to_iodata(Enumerable.t(), dump_options()) :: iodata()
 
   @doc """
   Lazily converts rows to a stream of iodata in CSV format.
@@ -616,10 +663,6 @@ defmodule RustyCSV do
     encoding = Keyword.get(options, :encoding, :utf8)
     validate_encoding!(encoding)
     bom = :unicode.encoding_to_bom(encoding)
-    encoded_newlines = Enum.map(newlines, &:unicode.characters_to_binary(&1, :utf8, encoding))
-
-    # For escaping, use all separators plus escape and newlines
-    escape_chars = separator_list ++ [escape] ++ newlines ++ [line_separator] ++ reserved
 
     stored_options = [
       separator: separator_list,
@@ -643,14 +686,12 @@ defmodule RustyCSV do
       newlines: newlines,
       trim_bom: trim_bom,
       dump_bom: dump_bom,
-      escape_chars: escape_chars,
       escape_formula: escape_formula,
       default_strategy: default_strategy,
       stored_options: stored_options,
       moduledoc: moduledoc,
       encoding: encoding,
-      bom: bom,
-      encoded_newlines: encoded_newlines
+      bom: bom
     }
   end
 
@@ -729,6 +770,23 @@ defmodule RustyCSV do
   # Private: AST Generation Helpers
   # ==========================================================================
 
+  defp build_formula_nif_config(nil), do: nil
+
+  defp build_formula_nif_config(map) when is_map(map) do
+    map
+    |> Enum.flat_map(&expand_formula_entry/1)
+  end
+
+  defp expand_formula_entry({prefixes, replacement}) do
+    prefixes = if is_list(prefixes), do: prefixes, else: [prefixes]
+    replacement_bin = if is_binary(replacement), do: replacement, else: to_string(replacement)
+
+    Enum.map(prefixes, fn prefix ->
+      <<first_byte, _rest::binary>> = prefix
+      {first_byte, replacement_bin}
+    end)
+  end
+
   defp quoted_module_header(config) do
     quote do
       @moduledoc unquote(Macro.escape(config.moduledoc))
@@ -751,13 +809,11 @@ defmodule RustyCSV do
                     )
       @trim_bom unquote(Macro.escape(config.trim_bom))
       @dump_bom unquote(Macro.escape(config.dump_bom))
-      @escape_chars unquote(Macro.escape(config.escape_chars))
-      @escape_formula unquote(Macro.escape(config.escape_formula))
+      @formula_nif_config unquote(Macro.escape(build_formula_nif_config(config.escape_formula)))
       @default_strategy unquote(Macro.escape(config.default_strategy))
       @stored_options unquote(Macro.escape(config.stored_options))
       @encoding unquote(Macro.escape(config.encoding))
       @bom unquote(Macro.escape(config.bom))
-      @encoded_newlines unquote(Macro.escape(config.encoded_newlines))
     end
   end
 
@@ -1156,50 +1212,55 @@ defmodule RustyCSV do
     end
   end
 
-  defp quoted_dumping_functions(config) do
-    escape_formula_ast = quoted_escape_formula_function(config.escape_formula)
-    maybe_to_encoding_ast = quoted_maybe_to_encoding(config.encoding)
-
-    # Pre-encode delimiters at compile time for non-UTF8 encodings
-    encoded_separator = :unicode.characters_to_binary(config.separator, :utf8, config.encoding)
-    encoded_escape = :unicode.characters_to_binary(config.escape, :utf8, config.encoding)
-
-    encoded_line_separator =
-      :unicode.characters_to_binary(config.line_separator, :utf8, config.encoding)
-
-    # Determine if NIF encoding is possible (UTF-8, no escape_formula)
-    nif_encoding_available = config.encoding == :utf8 and config.escape_formula == nil
-
+  defp quoted_dumping_functions(_config) do
     quote do
-      # Pre-encoded delimiters for dumping
-      @encoded_separator unquote(Macro.escape(encoded_separator))
-      @encoded_escape unquote(Macro.escape(encoded_escape))
-      @encoded_line_separator unquote(Macro.escape(encoded_line_separator))
-      @nif_encoding_available unquote(nif_encoding_available)
-
       @doc """
       Converts an enumerable of rows to iodata in CSV format.
 
+      Returns a single flat binary (valid `t:iodata/0`). Unlike NimbleCSV,
+      which returns an iodata list, RustyCSV writes all CSV bytes into one
+      contiguous binary in the NIF for better performance and lower memory use.
+
       ## Options
 
-        * `:encode_strategy` - Encoding strategy to use. Options:
-          * `:nif` — SIMD-accelerated NIF encoding (default when available)
-          * `:elixir` — Pure Elixir encoding (original implementation)
+        * `:strategy` - Encoding strategy. By default, uses a single-threaded
+          SIMD-accelerated encoder. Pass `strategy: :parallel` for multi-threaded
+          encoding via rayon, which is faster for quoting-heavy data.
 
-        NIF encoding is only available for UTF-8 modules without
-        `escape_formula`. Other configurations automatically fall back
-        to `:elixir`.
+      ## Examples
+
+          # Default encoder (best for most data)
+          #{inspect(__MODULE__)}.dump_to_iodata(rows)
+
+          # Parallel encoder (best for quoting-heavy data)
+          #{inspect(__MODULE__)}.dump_to_iodata(rows, strategy: :parallel)
+
       """
       @impl RustyCSV
-      @spec dump_to_iodata(Enumerable.t(), keyword()) :: iodata()
+      @spec dump_to_iodata(Enumerable.t(), RustyCSV.dump_options()) :: iodata()
       def dump_to_iodata(enumerable, opts \\ []) do
-        encode_strategy = Keyword.get(opts, :encode_strategy, :nif)
+        rows = if is_list(enumerable), do: enumerable, else: Enum.to_list(enumerable)
+        strategy = Keyword.get(opts, :strategy)
+        result = encode_rows_nif(rows, strategy)
 
-        if @nif_encoding_available and encode_strategy != :elixir do
-          # Collect rows to a list for the NIF
-          rows = Enum.to_list(enumerable)
+        if @dump_bom do
+          [@bom, result]
+        else
+          result
+        end
+      end
 
-          # Ensure all fields are binaries
+      defp encode_rows_nif(rows, :parallel) do
+        RustyCSV.Native.encode_string_parallel(
+          rows,
+          @separator_binaries,
+          @escape_binary,
+          @line_separator,
+          @formula_nif_config,
+          @encoding
+        )
+      rescue
+        ArgumentError ->
           rows =
             Enum.map(rows, fn row ->
               Enum.map(row, fn
@@ -1208,117 +1269,80 @@ defmodule RustyCSV do
               end)
             end)
 
-          result =
-            RustyCSV.Native.encode_string(
-              rows,
-              @separator_binaries,
-              @escape_binary,
-              @line_separator
-            )
+          RustyCSV.Native.encode_string_parallel(
+            rows,
+            @separator_binaries,
+            @escape_binary,
+            @line_separator,
+            @formula_nif_config,
+            @encoding
+          )
+      end
 
-          if @dump_bom do
-            [@bom, result]
-          else
-            result
-          end
-        else
-          # Pure Elixir fallback
-          iodata = Enum.map(enumerable, &dump_row/1)
+      defp encode_rows_nif(rows, _strategy) do
+        RustyCSV.Native.encode_string(
+          rows,
+          @separator_binaries,
+          @escape_binary,
+          @line_separator,
+          @formula_nif_config,
+          @encoding
+        )
+      rescue
+        ArgumentError ->
+          rows =
+            Enum.map(rows, fn row ->
+              Enum.map(row, fn
+                field when is_binary(field) -> field
+                field -> to_string(field)
+              end)
+            end)
 
-          if @dump_bom do
-            [@bom | iodata]
-          else
-            iodata
-          end
-        end
+          RustyCSV.Native.encode_string(
+            rows,
+            @separator_binaries,
+            @escape_binary,
+            @line_separator,
+            @formula_nif_config,
+            @encoding
+          )
       end
 
       @doc """
       Lazily converts an enumerable of rows to a stream of iodata.
-
-      Note: This always uses the pure Elixir encoding path since it processes
-      rows one at a time (NIF batching wouldn't help).
       """
       @impl RustyCSV
       @spec dump_to_stream(Enumerable.t()) :: Enumerable.t()
       def dump_to_stream(enumerable) do
-        Stream.map(enumerable, &dump_row/1)
+        Stream.map(enumerable, &encode_single_row_nif/1)
       end
 
-      defp dump_row(row) do
-        fields = Enum.map(row, &escape_field/1)
-        [Enum.intersperse(fields, @encoded_separator), @encoded_line_separator]
+      defp encode_single_row_nif(row) do
+        RustyCSV.Native.encode_string(
+          [row],
+          @separator_binaries,
+          @escape_binary,
+          @line_separator,
+          @formula_nif_config,
+          @encoding
+        )
+      rescue
+        ArgumentError ->
+          row =
+            Enum.map(row, fn
+              field when is_binary(field) -> field
+              field -> to_string(field)
+            end)
+
+          RustyCSV.Native.encode_string(
+            [row],
+            @separator_binaries,
+            @escape_binary,
+            @line_separator,
+            @formula_nif_config,
+            @encoding
+          )
       end
-
-      defp escape_field(field) when is_binary(field) do
-        field = maybe_escape_formula(field)
-
-        if String.contains?(field, @escape_chars) do
-          escaped = String.replace(field, @escape, @escape <> @escape)
-          maybe_to_encoding([@encoded_escape, escaped, @encoded_escape])
-        else
-          maybe_to_encoding(field)
-        end
-      end
-
-      defp escape_field(field), do: escape_field(to_string(field))
-
-      unquote(escape_formula_ast)
-      unquote(maybe_to_encoding_ast)
-    end
-  end
-
-  # For UTF-8, encoding conversion is a no-op (identity function)
-  defp quoted_maybe_to_encoding(:utf8) do
-    quote do
-      defp maybe_to_encoding(data), do: data
-    end
-  end
-
-  # For other encodings, convert from UTF-8 to target encoding
-  defp quoted_maybe_to_encoding(encoding) do
-    quote do
-      defp maybe_to_encoding(data) do
-        case :unicode.characters_to_binary(data, :utf8, unquote(Macro.escape(encoding))) do
-          binary when is_binary(binary) ->
-            binary
-
-          {:error, _, _} ->
-            raise RustyCSV.ParseError,
-              message: "Cannot encode data to #{inspect(unquote(Macro.escape(encoding)))}"
-        end
-      end
-    end
-  end
-
-  defp quoted_escape_formula_function(nil) do
-    quote do
-      defp maybe_escape_formula(field), do: field
-    end
-  end
-
-  defp quoted_escape_formula_function(escape_formula) do
-    # Flatten the map into {prefix, replacement} pairs.
-    # Keys are lists of prefix strings, values are the replacement string.
-    # e.g. %{["@", "+", "-", "="] => "'"} => [{"@", "'"}, {"+", "'"}, ...]
-    pairs =
-      Enum.flat_map(escape_formula, fn {prefixes, replacement} ->
-        prefixes = if is_list(prefixes), do: prefixes, else: [prefixes]
-        Enum.map(prefixes, fn prefix -> {prefix, replacement} end)
-      end)
-
-    clauses =
-      Enum.map(pairs, fn {prefix, replacement} ->
-        quote do
-          defp maybe_escape_formula(<<unquote(prefix), _rest::binary>> = field) do
-            unquote(replacement) <> field
-          end
-        end
-      end)
-
-    quote do
-      unquote_splicing(clauses)
-      defp maybe_escape_formula(field), do: field
     end
   end
 end

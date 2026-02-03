@@ -11,8 +11,7 @@ Unlike projects that wrap existing Rust crates (like the excellent `csv` crate),
 - **Direct BEAM term construction** - Results go straight to Erlang terms, no intermediate serialization
 - **ResourceArc integration** - Streaming parser state managed by BEAM's garbage collector
 - **Dirty scheduler awareness** - Long operations run on dirty CPU schedulers
-- **Zero-copy where possible** - `Cow<[u8]>` borrows data, only allocates for quote unescaping
-- **Sub-binary support** - Optional zero-copy mode using BEAM sub-binary references
+- **Sub-binary field references** - All batch strategies return BEAM sub-binaries pointing into the original input, only allocating for quote unescaping
 
 ### Six Parsing Strategies
 
@@ -20,30 +19,30 @@ RustyCSV offers unmatched flexibility with six parsing strategies:
 
 | Strategy | Innovation |
 |----------|------------|
-| `:simd` | Shared SIMD structural scan + `Cow`-based field extraction (default) |
-| `:parallel` | Shared SIMD scan + multi-threaded field extraction via `rayon` |
+| `:simd` | Shared SIMD structural scan + boundary-based sub-binary fields (default) |
+| `:basic` | Alias for `:simd` (same boundary-based path, retained for debugging) |
+| `:indexed` | Alias for `:simd` (same boundary-based path) |
+| `:zero_copy` | Alias for `:simd` (same boundary-based path) |
+| `:parallel` | Shared SIMD scan + rayon parallel boundary extraction + sub-binaries |
 | `:streaming` | Stateful parser with bounded memory, handles multi-GB files |
-| `:indexed` | Shared SIMD scan + two-phase index-then-extract for row range access |
-| `:zero_copy` | Shared SIMD scan + sub-binary references for maximum speed |
-| `:basic` | Shared SIMD scan + basic field extraction (debugging, baseline) |
 
 ### Memory Efficiency
 
-- **Configurable memory model** - Choose between copying (frees input early) or sub-binaries (zero-copy)
+- **Sub-binary memory model** - All batch strategies use sub-binary references (5-14x less memory than pure Elixir)
 - **Streaming bounded memory** - Process 10GB+ files with ~64KB memory footprint
 - **mimalloc allocator** - High-performance allocator for reduced fragmentation
 - **Optional memory tracking** - Opt-in profiling with zero overhead when disabled
 
 ### Validated Correctness
 
-- **367 tests** covering RFC 4180, industry test suites, edge cases, encodings, multi-byte separators/escapes, and headers-to-maps
+- **464 tests** covering RFC 4180, industry test suites, edge cases, encodings, multi-byte separators/escapes, and headers-to-maps
 - **Cross-strategy validation** - All 6 strategies produce identical output
 - **NimbleCSV compatibility** - Verified identical behavior for all API functions
 
 ## Quick Start
 
 ```elixir
-# Use the pre-defined RFC4180 parser (like NimbleCSV.RFC4180)
+# Use the pre-defined RFC4180 parser (drop-in replacement for NimbleCSV.RFC4180)
 alias RustyCSV.RFC4180, as: CSV
 
 # Parse CSV (skips headers by default, like NimbleCSV)
@@ -54,11 +53,8 @@ CSV.parse_string("name,age\njohn,27\n")
 CSV.parse_string("name,age\njohn,27\n", skip_headers: false)
 #=> [["name", "age"], ["john", "27"]]
 
-# Choose strategy for large files
+# Choose strategy for large files with many cores
 CSV.parse_string(huge_csv, strategy: :parallel)
-
-# Use zero-copy for maximum speed (keeps parent binary alive)
-CSV.parse_string(data, strategy: :zero_copy)
 
 # Stream large files (uses bounded-memory streaming parser)
 "huge.csv"
@@ -74,14 +70,14 @@ CSV.dump_to_iodata([["a", "b"], ["1", "2"]])
 
 ## NimbleCSV API Compatibility
 
-RustyCSV implements the complete NimbleCSV API:
+RustyCSV is designed as a drop-in replacement for NimbleCSV. It implements the complete API:
 
 | Function | Description | Status |
 |----------|-------------|--------|
 | `parse_string/2` | Parse CSV string to list of rows | ✅ |
 | `parse_stream/2` | Lazily parse a stream | ✅ |
 | `parse_enumerable/2` | Parse any enumerable | ✅ |
-| `dump_to_iodata/1` | Convert rows to iodata | ✅ |
+| `dump_to_iodata/1` | Convert rows to iodata (returns flat binary — see [Encoding](#nif-accelerated-encoding-flat-binary)) | ✅ |
 | `dump_to_stream/1` | Lazily convert rows to iodata stream | ✅ |
 | `to_line_stream/1` | Convert arbitrary chunks to lines | ✅ |
 | `options/0` | Return module configuration | ✅ |
@@ -101,7 +97,7 @@ RustyCSV implements the complete NimbleCSV API:
 | `:moduledoc` | ✅ | ✅ | ✅ |
 | `:encoding` | ✅ | ✅ | Full support |
 
-### Migration from NimbleCSV
+### Migration
 
 ```elixir
 # Before
@@ -110,19 +106,18 @@ alias NimbleCSV.RFC4180, as: CSV
 # After
 alias RustyCSV.RFC4180, as: CSV
 
-# That's it! All function calls work identically.
+# All function calls work identically.
 ```
 
 ### RustyCSV Extensions
 
-RustyCSV adds options not in NimbleCSV:
+Beyond the NimbleCSV API:
 
 ```elixir
-# Choose parsing strategy (RustyCSV only)
+# Choose parsing strategy
 CSV.parse_string(data, strategy: :parallel)
-CSV.parse_string(data, strategy: :zero_copy)
 
-# Return maps instead of lists (RustyCSV only)
+# Return maps instead of lists
 CSV.parse_string(data, headers: true)
 #=> [%{"name" => "john", "age" => "27"}]
 
@@ -134,15 +129,15 @@ CSV.parse_string(data, headers: [:name, :age])
 
 RustyCSV implements six parsing strategies, each optimized for different use cases:
 
-All five batch strategies (`:simd`, `:basic`, `:indexed`, `:parallel`, `:zero_copy`) share a single-pass SIMD structural scanner (`scan_structural`) that finds every unquoted separator and row ending in one sweep, producing a `StructuralIndex`. The strategies differ only in how they extract field data from the index.
+All five batch strategies (`:simd`, `:basic`, `:indexed`, `:parallel`, `:zero_copy`) share a single-pass SIMD structural scanner (`scan_structural`) that finds every unquoted separator and row ending in one sweep, producing a `StructuralIndex`. All five use boundary-based sub-binary output — they parse field boundaries, then create BEAM sub-binary references into the original input. The four single-threaded strategies extract boundaries on one thread; `:parallel` uses rayon to extract boundaries across multiple threads, then builds sub-binary terms on the main thread.
 
 | Strategy | Description | Best For |
 |----------|-------------|----------|
-| `:simd` | SIMD scan + `Cow`-based field extraction (default) | Most files - fastest general purpose |
-| `:basic` | SIMD scan + basic field extraction | Debugging, baseline comparison |
-| `:indexed` | SIMD scan + two-phase index-then-extract | When you need to re-extract rows |
-| `:parallel` | SIMD scan + rayon parallel field extraction | Large files with many cores |
-| `:zero_copy` | SIMD scan + sub-binary references | Maximum speed, controlled memory lifetime |
+| `:simd` | SIMD scan + boundary-based sub-binary fields (default) | Most files - fastest general purpose |
+| `:basic` | Alias for `:simd` (same boundary-based path) | Debugging, baseline comparison |
+| `:indexed` | Alias for `:simd` (same boundary-based path) | Compatibility |
+| `:parallel` | SIMD scan + rayon parallel boundary extraction + sub-binaries | Large files with many cores |
+| `:zero_copy` | Alias for `:simd` (same boundary-based path) | Compatibility |
 | `:streaming` | Stateful chunked parser | Unbounded files, bounded memory |
 
 ### Strategy Selection Guide
@@ -150,20 +145,20 @@ All five batch strategies (`:simd`, `:basic`, `:indexed`, `:parallel`, `:zero_co
 ```
 File Size        Recommended Strategy
 ─────────────────────────────────────────────────────────────
-< 1 MB           :simd (default) or :zero_copy
-1-500 MB         :simd or :zero_copy
-Large files      :parallel or :zero_copy
+< 1 MB           :simd (default)
+1-500 MB         :simd (default)
+Large files      :simd or :parallel (multi-core)
 Unbounded        streaming (parse_stream)
-Memory-sensitive :simd (copies data, frees input immediately)
-Speed-sensitive  :zero_copy (sub-binaries, keeps input alive)
 ```
+
+All batch strategies except `:parallel` use the same boundary-based sub-binary path. `:simd` is the recommended default for all file sizes.
 
 ### Memory Model Trade-offs
 
 | Strategy | Memory Model | Input Binary | Best When |
 |----------|--------------|--------------|-----------|
-| `:simd`, `:basic`, `:indexed`, `:parallel` | Copy | Freed immediately | Processing subsets, memory-constrained |
-| `:zero_copy` | Sub-binary | Kept alive | Speed-critical, short-lived results |
+| `:simd`, `:basic`, `:indexed`, `:zero_copy` | Sub-binary | Kept alive until fields GC'd | General use (5-14x less memory than pure Elixir) |
+| `:parallel` | Sub-binary | Kept alive until fields GC'd | Multi-core, large files |
 | `:streaming` | Copy (chunked) | Freed per chunk | Unbounded files |
 
 ## Project Structure
@@ -185,7 +180,9 @@ native/rustycsv/src/
 │   ├── streaming.rs      # D: Stateful chunked parser (single-byte fast path)
 │   ├── parallel.rs       # E: Rayon-based parallel (StructuralIndex for row ranges)
 │   ├── zero_copy.rs      # F: Sub-binary boundary parsing (consume StructuralIndex)
-│   └── general.rs        # Multi-byte separator/escape support (all strategies)
+│   ├── general.rs        # Multi-byte separator/escape support (all strategies)
+│   ├── encode.rs         # SIMD field scanning, quoting helpers for encoding
+│   └── encoding.rs       # UTF-8 → target encoding converters (UTF-16, Latin-1, etc.)
 ├── term.rs               # Term building (lists + maps, copy + sub-binary, multi-byte escape)
 └── resource.rs           # ResourceArc for streaming parser (single-byte + general)
 
@@ -226,34 +223,33 @@ pub struct StructuralIndex {
 
 Positions use `u32` (4 GB cap) to halve memory vs `usize` on 64-bit. Strategies consume the index via `rows_with_fields()`, a cursor-based iterator that yields `(row_start, row_content_end, FieldIter)` tuples by advancing a linear cursor through `field_seps` — O(total_seps) across all rows instead of O(rows × log(seps)) with binary search.
 
-### Quote Handling with Cow
+### Quote Handling with Sub-Binaries
 
-All strategies properly handle CSV quote escaping (doubled quotes `""` → `"`). This is achieved using `Cow<'_, [u8]>` which:
-- Returns borrowed slices when no unescaping needed (zero-copy)
-- Allocates owned data only when escaped quotes must be processed
+All batch strategies properly handle CSV quote escaping (doubled quotes `""` → `"`). The boundary-based approach uses a hybrid strategy:
+
+- **Unquoted fields** → sub-binary reference into original input (zero-copy)
+- **Quoted without escapes** → sub-binary of inner content, stripping outer quotes (zero-copy)
+- **Quoted with escapes** → copy and unescape `""` → `"` (must allocate)
 
 ```rust
-pub fn extract_field_cow(input: &[u8], start: usize, end: usize) -> Cow<'_, [u8]> {
-    // Fast path: not quoted or no escaped quotes inside
-    if !needs_unescaping(field) {
-        return Cow::Borrowed(field);
+fn field_to_term_hybrid(env, input: &Binary, start, end, escape) -> Term {
+    let field = &input.as_slice()[start..end];
+    if needs_unescaping(field) {
+        // Must copy and unescape: "val""ue" -> val"ue
+        return copy_and_unescape(field);
     }
-    // Slow path: unescape "" to "
-    Cow::Owned(unescape_quotes(field))
+    // Zero-copy: create sub-binary reference
+    input.make_subbinary(start, len).unwrap().into()
 }
 ```
 
-### Strategy A/B: Direct Parsing
+### Strategy A/B: Direct Parsing (Boundary-Based)
 
-Both basic and SIMD strategies call `scan_structural` to build a `StructuralIndex`, then iterate rows via `rows_with_fields()` extracting fields with `extract_field_cow_with_escape`. The two strategies are now functionally identical (both use the SIMD scanner); `:basic` is retained as a named alias for debugging.
+All four non-parallel batch strategies (`:simd`, `:basic`, `:indexed`, `:zero_copy`) use the same path: call `scan_structural` to build a `StructuralIndex`, parse field boundaries into `Vec<Vec<(usize, usize)>>`, then create BEAM sub-binary terms via `boundaries_to_term_hybrid`. They are functionally identical; the named variants are retained for API compatibility.
 
 ### Strategy C: Two-Phase Index-then-Extract
 
-1. **Phase 1**: `scan_structural` → `StructuralIndex` (shared SIMD scan)
-2. **Bridge**: `structural_to_csv_index` converts to the legacy `CsvIndex` (row bounds + field bounds)
-3. **Phase 2**: Extract fields using the index with `Cow`-based unescaping
-
-Benefits: Better cache utilization, can skip rows via `extract_rows` range queries, predictable memory.
+Now uses the same boundary-based sub-binary path as `:simd`. The two-phase strategy functions (`parse_csv_indexed*`) remain in the codebase but the NIF dispatches through the unified boundary path. The `:indexed` name is retained for API compatibility.
 
 ### Strategy D: Streaming Parser
 
@@ -282,12 +278,13 @@ Key features:
 
 ### Strategy E: Parallel Parser
 
-Uses rayon for multi-threaded row parsing on a **dedicated thread pool** (`rustycsv-*`
+Uses rayon for multi-threaded boundary extraction on a **dedicated thread pool** (`rustycsv-*`
 threads, capped at 8) to avoid contention with other Rayon users in the same VM:
 
 1. **Single-threaded**: `scan_structural` → `StructuralIndex` (row boundaries + field separator positions)
 2. **O(n) cursor walk**: Collect `(row_start, content_end, sep_lo, sep_hi)` into a flat `Vec`, mapping each row to its slice of `field_seps`
-3. **Parallel**: Each worker indexes directly into the shared `&[u32]` field_seps slice — no re-scanning, no per-row allocation
+3. **Parallel**: Each worker computes `(start, end)` boundary pairs for its rows by indexing into the shared `&[u32]` field_seps slice — no data copying, no per-row allocation
+4. **Single-threaded**: Main thread builds BEAM sub-binary terms from the collected boundaries via `boundaries_to_term_hybrid`
 
 Uses `DirtyCpu` scheduler to avoid blocking normal BEAM schedulers.
 
@@ -297,13 +294,13 @@ The SIMD structural scanner already finds every separator position. Three approa
 
 - **Approach A** — Pre-collect `Vec<Vec<(u32, u32)>>` field bounds: 10K+ inner Vec allocations cost more than the memchr scan (-18% on simple CSV).
 - **Approach B** — Binary search via `fields_in_row()`: Two `partition_point` calls per row add O(log n) overhead (-11% on simple CSV).
-- **Approach C** (current) — Flat index + direct slice: O(n) cursor walk builds a single flat Vec mapping each row to its slice of `field_seps`. Each worker indexes into the shared `&[u32]` with O(1) lookup. This avoids A's allocation overhead and B's binary search overhead, improving performance +1-12% vs the memchr baseline depending on workload.
+- **Approach C** (current) — Flat index + direct slice: O(n) cursor walk builds a single flat Vec mapping each row to its slice of `field_seps`. Each worker indexes into the shared `&[u32]` with O(1) lookup. This avoids A's allocation overhead and B's binary search overhead.
 
-**Note**: Parallel mode involves a double-copy (Rust Vec → BEAM binary) because BEAM terms cannot be constructed on worker threads. The SIMD structural scan makes phase 1 fast enough that `:parallel` is now competitive at all file sizes, not just 500MB+.
+**Note**: Workers compute boundary pairs only (pure arithmetic) — BEAM sub-binary terms are built on the main thread since `Env` is not thread-safe. The `make_subbinary` call is O(1) per field, so the serial term construction is not a bottleneck.
 
-### Strategy F: Zero-Copy Parser
+### Strategy F: Sub-Binary Field Construction (All Batch Strategies)
 
-Returns BEAM sub-binary references instead of copying data:
+All batch strategies now use the same sub-binary field construction path. The `boundaries_to_term_hybrid` function in `term.rs` creates BEAM terms from parsed field boundaries:
 
 ```rust
 fn field_to_term_hybrid(env, input: &Binary, start, end, escape) -> Term {
@@ -325,7 +322,7 @@ fn field_to_term_hybrid(env, input: &Binary, start, end, escape) -> Term {
 - Quoted without escapes → sub-binary of inner content (zero-copy)
 - Quoted with escapes → copy and unescape (must allocate)
 
-**Trade-off**: Sub-binaries keep the parent binary alive until all field references are garbage collected.
+**Trade-off**: Sub-binaries keep the parent binary alive until all field references are garbage collected. This is the right default since the memory savings (5-14x vs pure Elixir) far outweigh the delayed input GC.
 
 ### Headers-to-Maps
 
@@ -333,8 +330,8 @@ Two dedicated NIFs (`parse_to_maps`, `parse_to_maps_parallel`) return rows as El
 
 **Architecture:**
 ```
-headers: false (default)  →  existing NIFs  →  cow_rows_to_term (list of lists)
-headers: true/[...]       →  new NIFs       →  cow_rows_to_maps (list of maps)
+headers: false (default)  →  existing NIFs  →  boundaries_to_term_hybrid (list of lists)
+headers: true/[...]       →  new NIFs       →  boundaries_to_maps_hybrid (list of maps)
 ```
 
 **Key interning**: Header terms are allocated once in Rust and reused for every row, avoiding repeated binary allocation for map keys.
@@ -349,6 +346,39 @@ headers: true/[...]       →  new NIFs       →  cow_rows_to_maps (list of map
 - Fewer columns than keys → `nil` fill
 - More columns than keys → extra columns ignored
 - Duplicate keys → last value wins (incremental map building fallback)
+
+### NIF-Accelerated Encoding (Flat Binary)
+
+`dump_to_iodata` dispatches to the `encode_string` Rust NIF, which writes CSV bytes into a `Vec<u8>` and returns a single flat binary via `NewBinary`.
+
+**Why flat binary instead of iodata:**
+
+The previous approach collected every field, separator, and newline as an Erlang `Term` in a `Vec<Term>`. Each `Term` is 16 bytes (ERL_NIF_TERM + Env pointer), so 100K rows × 8 cols generated ~1.6M entries × 16 bytes = ~25 MB of Rust heap just for term handles — far more than the actual CSV output (~8 MB). The flat binary approach writes raw bytes into a `Vec<u8>` sized proportionally to the output, then does a single `memcpy` into a `NewBinary`. This is 18–63% faster and uses 3–6x less NIF memory.
+
+**Architecture:**
+
+```
+Input: Erlang list of lists (rows of binary fields)
+  │
+  ├─ For each field:
+  │    ├─ SIMD scan: needs quoting? (16-32 bytes/cycle)
+  │    ├─ Check formula trigger (if escape_formula configured)
+  │    ├─ Write to Vec<u8>: raw bytes / quoted bytes / formula-prefixed
+  │    └─ If non-UTF-8: encode field bytes to target encoding
+  │
+  └─ memcpy Vec<u8> → NewBinary (single BEAM allocation)
+```
+
+**Four PostProcess modes** (zero-overhead dispatch via enum):
+
+| Mode | Formula | Encoding | Behavior |
+|------|---------|----------|----------|
+| `None` | No | UTF-8 | Write field bytes / quoted bytes directly |
+| `FormulaOnly` | Yes | UTF-8 | Prefix triggered fields, quote if dirty |
+| `EncodingOnly` | No | Non-UTF-8 | Encode each field + separators to target |
+| `Full` | Yes | Non-UTF-8 | Formula prefix (raw) + encoded content |
+
+See [BENCHMARK.md](BENCHMARK.md#encoding-benchmark-results) for throughput and memory numbers.
 
 ---
 
@@ -414,20 +444,15 @@ This reduces reallocation overhead during the scan pass.
 
 ## Background: Why a Rust NIF?
 
-### NimbleCSV Strengths
+### Why a NIF Over Pure Elixir?
 
-NimbleCSV is remarkably fast for pure Elixir:
-- Binary pattern matching is highly optimized
-- Sub-binary references provide zero-copy field extraction
-- Match context optimization for continuous parsing
+Pure Elixir CSV parsing is fast — binary pattern matching and sub-binary references are well-optimized on the BEAM. A Rust NIF adds:
 
-### RustyCSV Advantages
-
-1. **Multiple strategies** - Choose the right tool for each workload
-2. **Streaming support** - Process arbitrarily large files with bounded memory
-3. **Reduced scheduler load** - Offload parsing to native code
-4. **Competitive speed** - 3.7x-12.5x faster on typical workloads, up to 18x on quoted data
-5. **Flexible memory model** - Copy or sub-binary, your choice
+1. **SIMD structural scanning** - Process 16-32 bytes per cycle for delimiter/quote detection
+2. **Multiple strategies** - Choose the right tool for each workload
+3. **Streaming support** - Process arbitrarily large files with bounded memory
+4. **Reduced scheduler load** - Offload parsing to native code
+5. **Memory efficiency** - Sub-binary references use 5-14x less memory than pure Elixir
 6. **NIF safety** - Dirty schedulers for long operations
 
 ## NIF Safety
@@ -451,8 +476,8 @@ remain on the normal scheduler.
 
 All application code is **zero `unsafe`**. The only `unsafe` in the codebase is the `GlobalAlloc` trait impl behind the opt-in `memory_tracking` feature flag — this is a development-only benchmarking tool for profiling Rust-side allocations, not intended for production use. The `unsafe` is required by the `GlobalAlloc` trait definition and cannot be avoided. It is disabled by default and adds measurable overhead when enabled.
 
-- Copy-based strategies copy data to BEAM terms, then free Rust memory
-- Zero-copy strategy creates sub-binary references via rustler's safe `Binary::make_subbinary` API (bounds-checked, returns `NifResult`)
+- All batch strategies create sub-binary references via rustler's safe `Binary::make_subbinary` API (bounds-checked, returns `NifResult`)
+- Parallel strategy extracts boundaries on rayon workers, builds sub-binary terms on the main thread (Env is not thread-safe)
 - SIMD scanner uses `std::simd` portable SIMD with no `std::arch` intrinsics
 - Streaming parser uses `ResourceArc` with proper cleanup
 - Streaming buffer is capped at 256 MB by default (configurable via `:max_buffer_size`)
@@ -462,9 +487,9 @@ All application code is **zero `unsafe`**. The only `unsafe` in the codebase is 
 
 ## Benchmark Results
 
-- **Synthetic benchmarks**: 3.7x-12.5x faster than NimbleCSV for typical data, up to 18x for heavily quoted CSVs
-- **Real-world TSV**: 13-28% faster than NimbleCSV (10K+ rows)
-- **Streaming**: 2.2x faster than NimbleCSV for line-based streams; RustyCSV uniquely handles binary chunks
+- **Synthetic benchmarks**: 3.5x-13x faster than pure Elixir for typical data, up to 19x for heavily quoted CSVs
+- **Real-world TSV**: 13-28% faster than pure Elixir (10K+ rows)
+- **Streaming**: 2.2x faster than pure Elixir for line-based streams; also handles arbitrary binary chunks
 
 The speedup varies by data complexity—quoted fields with escapes show the largest gains.
 

@@ -1,7 +1,6 @@
 // Shared term building utilities for converting Rust data to Elixir terms
 
 use rustler::{Binary, Env, NewBinary, Term};
-use std::borrow::Cow;
 
 /// Convert a list of byte-like fields to an Elixir cons-list of binaries.
 /// Works with any iterator of `AsRef<[u8]>` items (Vec<u8>, Cow<[u8]>, &[u8], etc).
@@ -31,20 +30,6 @@ pub fn owned_rows_to_term<'a>(env: Env<'a>, rows: Vec<Vec<Vec<u8>>>) -> Term<'a>
 
 /// Convert owned fields to an Elixir list of binaries
 pub fn owned_fields_to_term<'a>(env: Env<'a>, fields: Vec<Vec<u8>>) -> Term<'a> {
-    fields_to_term_inner(env, fields.into_iter())
-}
-
-/// Convert Cow-based rows to Elixir term (for strategies that may need to allocate for escaped quotes)
-pub fn cow_rows_to_term<'a>(env: Env<'a>, rows: Vec<Vec<Cow<'_, [u8]>>>) -> Term<'a> {
-    let mut list = Term::list_new_empty(env);
-    for row in rows.into_iter().rev() {
-        list = list.list_prepend(cow_fields_to_term(env, row));
-    }
-    list
-}
-
-/// Convert Cow-based fields to an Elixir list of binaries
-pub fn cow_fields_to_term<'a>(env: Env<'a>, fields: Vec<Cow<'_, [u8]>>) -> Term<'a> {
     fields_to_term_inner(env, fields.into_iter())
 }
 
@@ -247,40 +232,6 @@ fn rows_to_maps_inner<'a, R>(
         list = list.list_prepend(make_map(env, keys, &value_terms));
     }
     list
-}
-
-/// Helper: convert a byte slice to a BEAM binary term.
-#[inline]
-fn bytes_to_binary_term<'a>(env: Env<'a>, bytes: &[u8]) -> Term<'a> {
-    let mut binary = NewBinary::new(env, bytes.len());
-    binary.as_mut_slice().copy_from_slice(bytes);
-    binary.into()
-}
-
-/// Convert Cow rows to maps using pre-built key terms.
-pub fn cow_rows_to_maps<'a>(
-    env: Env<'a>,
-    keys: &[Term<'a>],
-    rows: &[Vec<Cow<'_, [u8]>>],
-) -> Term<'a> {
-    rows_to_maps_inner(
-        env,
-        keys,
-        rows.iter(),
-        |row| row.len(),
-        |env, row, i| bytes_to_binary_term(env, row[i].as_ref()),
-    )
-}
-
-/// Convert owned rows to maps.
-pub fn owned_rows_to_maps<'a>(env: Env<'a>, keys: &[Term<'a>], rows: &[Vec<Vec<u8>>]) -> Term<'a> {
-    rows_to_maps_inner(
-        env,
-        keys,
-        rows.iter(),
-        |row| row.len(),
-        |env, row, i| bytes_to_binary_term(env, &row[i]),
-    )
 }
 
 /// Convert boundary rows to maps with sub-binary hybrid approach (single-byte escape).

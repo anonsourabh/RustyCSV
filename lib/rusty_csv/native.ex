@@ -547,7 +547,8 @@ defmodule RustyCSV.Native do
   multi-byte separator/escape sequences.
 
   Accepts a list of rows, where each row is a list of binary fields.
-  Returns a single binary containing the CSV-encoded output.
+  Returns iodata (nested lists) — clean fields are passed through as
+  zero-copy references, only dirty fields requiring quoting are allocated.
 
   ## Parameters
 
@@ -562,8 +563,50 @@ defmodule RustyCSV.Native do
       "a,b\\n1,2\\n"
 
   """
-  @spec encode_string([[binary()]], separator(), escape(), binary() | atom()) :: binary()
-  def encode_string(_rows, _separator, _escape, _line_separator),
+  @spec encode_string([[binary()]], separator(), escape(), binary() | atom(), term(), term()) ::
+          iodata()
+  def encode_string(_rows, _separator, _escape, _line_separator, _formula, _encoding),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Encode rows to CSV in parallel using rayon, returning iodata (list of binaries).
+
+  Uses multiple threads to encode chunks of rows simultaneously. Copies all
+  field data into Rust-owned memory before dispatching to worker threads.
+
+  Best for **quoting-heavy data** — fields that frequently contain commas,
+  quotes, or newlines (e.g., user-generated content, free-text descriptions).
+  The per-field quoting work parallelizes well and outweighs the copy overhead.
+
+  For typical/clean data where most fields pass through unquoted, prefer
+  `encode_string/4` which avoids the copy via zero-copy term references.
+
+  Only supports single-byte separator/escape. Raises `ArgumentError` for
+  multi-byte configurations — use `encode_string/4` instead.
+
+  ## Parameters
+
+    * `rows` - List of rows (list of lists of binaries)
+    * `separator` - Field separator (see "Separator Format" above)
+    * `escape` - Escape character (see "Escape Format" above)
+    * `line_separator` - Line separator binary or `:default` for `"\\n"`
+
+  ## Examples
+
+      iex> RustyCSV.Native.encode_string_parallel([["a", "b"], ["1", "2"]], [","], "\\"", "\\r\\n")
+      ...> |> IO.iodata_to_binary()
+      "a,b\\r\\n1,2\\r\\n"
+
+  """
+  @spec encode_string_parallel(
+          [[binary()]],
+          separator(),
+          escape(),
+          binary() | atom(),
+          term(),
+          term()
+        ) :: iodata()
+  def encode_string_parallel(_rows, _separator, _escape, _line_separator, _formula, _encoding),
     do: :erlang.nif_error(:nif_not_loaded)
 
   # ==========================================================================

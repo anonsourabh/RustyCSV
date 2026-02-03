@@ -1,6 +1,6 @@
 # RustyCSV Compliance & Validation
 
-RustyCSV takes correctness seriously. With **367 tests** across multiple test suites, including industry-standard validation suites used by CSV parsers across multiple languages, RustyCSV is one of the most thoroughly tested CSV libraries available for Elixir.
+RustyCSV takes correctness seriously. With **464 tests** across multiple test suites, including industry-standard validation suites used by CSV parsers across multiple languages, RustyCSV is one of the most thoroughly tested CSV libraries available for Elixir.
 
 This document describes RFC 4180 compliance and the validation methodology.
 
@@ -252,7 +252,7 @@ test/fixtures/
 | Custom newlines | 18 | Custom newline parsing and streaming |
 | Streaming safety | 12 | Buffer overflow, mutex poisoning, concurrent access |
 | Concurrent access | 7 | Multi-process streaming safety |
-| **Total** | **367** | |
+| **Total** | **464** | |
 
 ---
 

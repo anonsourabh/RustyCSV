@@ -1,116 +1,125 @@
 # RustyCSV Benchmarks
 
-This document presents benchmark results comparing RustyCSV's parsing strategies against NimbleCSV.
+This document presents benchmark results comparing RustyCSV's parsing and encoding performance against pure Elixir (NimbleCSV 1.3.0).
 
 ## Test Environment
 
 - **Elixir**: 1.19.4
 - **OTP**: 28
-- **Hardware**: Apple Silicon M1 Pro (10 cores)
-- **RustyCSV**: 0.3.5
-- **NimbleCSV**: 1.3.0
-- **Test date**: February 1, 2026
+- **Hardware**: Apple Silicon M1 Pro (10 cores, 16 GB RAM)
+- **RustyCSV**: 0.3.6
+- **Pure Elixir baseline**: NimbleCSV 1.3.0
+- **Test date**: February 2, 2026
+
+> **Note:** All results below were collected on this specific hardware. Absolute throughput numbers will vary on different machines, but relative speedups should be broadly representative.
 
 ## Strategies Compared
 
 | Strategy | Description | Best For |
 |----------|-------------|----------|
-| `:simd` | SIMD structural scanner (default) | General use |
-| `:basic` | SIMD scan + basic field extraction | Debugging, baseline |
-| `:indexed` | SIMD scan + two-phase index-then-extract | Row range extraction |
-| `:parallel` | SIMD scan + flat index + parallel field extraction via rayon | Large files |
-| `:zero_copy` | SIMD scan + sub-binary references | Maximum speed |
+| `:simd` | SIMD scan + boundary-based sub-binary fields (default) | General use |
+| `:basic` | Alias for `:simd` (same boundary-based path) | Debugging, baseline |
+| `:indexed` | Alias for `:simd` (same boundary-based path) | Row range extraction |
+| `:parallel` | SIMD scan + rayon parallel boundary extraction + sub-binaries | Large files |
+| `:zero_copy` | Alias for `:simd` (same boundary-based path) | Compatibility |
 | `:streaming` | Bounded-memory chunks | Unbounded files |
 
-All batch strategies share a single-pass SIMD structural scanner that finds every unquoted separator and row ending, then diverge only in how they extract field data.
+All batch strategies share a single-pass SIMD structural scanner that finds every unquoted separator and row ending, then create BEAM sub-binary references into the original input. The `:simd`, `:basic`, `:indexed`, and `:zero_copy` strategies extract boundaries single-threaded. `:parallel` uses rayon to extract boundaries across multiple threads, then builds sub-binary terms on the main thread.
 
 ## Throughput Benchmark Results
 
 ### Simple CSV (334 KB, 10K rows, no quotes)
 
-| Strategy | Throughput | Latency | vs NimbleCSV |
-|----------|------------|---------|--------------|
-| RustyCSV (zero_copy) | 829 ips | 1.02ms | **3.7x faster** |
-| RustyCSV (basic) | 758 ips | 1.13ms | 3.3x faster |
-| RustyCSV (simd) | 744 ips | 1.14ms | 3.3x faster |
-| RustyCSV (indexed) | 688 ips | 1.26ms | 3.0x faster |
-| RustyCSV (parallel) | 567 ips | 1.58ms | 2.5x faster |
-| NimbleCSV | 227 ips | 4.32ms | baseline |
+| Strategy | Throughput | vs pure Elixir |
+|----------|------------|--------------|
+| RustyCSV (basic) | 783 ips | **3.5x faster** |
+| RustyCSV (simd) | 772 ips | **3.5x faster** |
+| RustyCSV (indexed) | 769 ips | **3.5x faster** |
+| RustyCSV (zero_copy) | 768 ips | **3.4x faster** |
+| RustyCSV (parallel) | 487 ips | **2.1x faster** |
+| Pure Elixir | 233 ips | baseline |
+
+All four single-threaded strategies perform identically (~770 ips). Parallel adds rayon overhead but is still 2.1x faster than pure Elixir.
 
 ### Quoted CSV (947 KB, 10K rows, all fields quoted with escapes)
 
-| Strategy | Throughput | Latency | vs NimbleCSV |
-|----------|------------|---------|--------------|
-| RustyCSV (zero_copy) | 444 ips | 2.04ms | **17.9x faster** |
-| RustyCSV (basic) | 418 ips | 2.18ms | 16.9x faster |
-| RustyCSV (simd) | 418 ips | 2.19ms | 16.8x faster |
-| RustyCSV (parallel) | 400 ips | 2.33ms | 16.1x faster |
-| RustyCSV (indexed) | 390 ips | 2.35ms | 15.7x faster |
-| NimbleCSV | 25 ips | 40.20ms | baseline |
+| Strategy | Throughput | vs pure Elixir |
+|----------|------------|--------------|
+| RustyCSV (basic) | 452 ips | **18.8x faster** |
+| RustyCSV (indexed) | 452 ips | **18.8x faster** |
+| RustyCSV (simd) | 449 ips | **18.6x faster** |
+| RustyCSV (zero_copy) | 415 ips | **17.2x faster** |
+| RustyCSV (parallel) | 326 ips | **13.3x faster** |
+| Pure Elixir | 25 ips | baseline |
 
 ### Mixed/Realistic CSV (652 KB, 10K rows)
 
-| Strategy | Throughput | Latency | vs NimbleCSV |
-|----------|------------|---------|--------------|
-| RustyCSV (zero_copy) | 564 ips | 1.53ms | **5.8x faster** |
-| RustyCSV (simd) | 504 ips | 1.71ms | 5.2x faster |
-| RustyCSV (basic) | 473 ips | 1.85ms | 4.9x faster |
-| RustyCSV (indexed) | 437 ips | 2.03ms | 4.5x faster |
-| RustyCSV (parallel) | 362 ips | 2.52ms | 3.7x faster |
-| NimbleCSV | 98 ips | 10.14ms | baseline |
+| Strategy | Throughput | vs pure Elixir |
+|----------|------------|--------------|
+| RustyCSV (zero_copy) | 540 ips | **5.7x faster** |
+| RustyCSV (simd) | 497 ips | **5.2x faster** |
+| RustyCSV (basic) | 490 ips | **5.2x faster** |
+| RustyCSV (indexed) | 487 ips | **5.1x faster** |
+| RustyCSV (parallel) | 351 ips | **3.5x faster** |
+| Pure Elixir | 101 ips | baseline |
 
 ### Large CSV (6.82 MB, 100K rows)
 
-| Strategy | Throughput | Latency | vs NimbleCSV |
-|----------|------------|---------|--------------|
-| RustyCSV (zero_copy) | 49.5 ips | 17.37ms | **10.7x faster** |
-| RustyCSV (basic) | 45.0 ips | 18.58ms | 9.7x faster |
-| RustyCSV (simd) | 45.0 ips | 18.65ms | 9.6x faster |
-| RustyCSV (indexed) | 40.8 ips | 20.21ms | 8.8x faster |
-| RustyCSV (parallel) | 40.6 ips | 20.46ms | 8.7x faster |
-| NimbleCSV | 4.6 ips | 211ms | baseline |
+| Strategy | Throughput | vs pure Elixir |
+|----------|------------|--------------|
+| RustyCSV (zero_copy) | 49.5 ips | **11.5x faster** |
+| RustyCSV (indexed) | 49.4 ips | **11.5x faster** |
+| RustyCSV (simd) | 48.9 ips | **11.4x faster** |
+| RustyCSV (basic) | 47.0 ips | **10.9x faster** |
+| RustyCSV (parallel) | 39.3 ips | **9.1x faster** |
+| Pure Elixir | 4.3 ips | baseline |
 
 ### Very Large CSV (108 MB, 1.5M rows)
 
-| Strategy | Throughput | Latency | vs NimbleCSV |
-|----------|------------|---------|--------------|
-| RustyCSV (zero_copy) | 2.53 ips | 0.29s | **12.5x faster** |
-| RustyCSV (simd) | 2.28 ips | 0.30s | 11.2x faster |
-| RustyCSV (parallel) | 1.99 ips | 0.49s | 9.7x faster |
-| NimbleCSV | 0.20 ips | 4.93s | baseline |
+| Strategy | Throughput | vs pure Elixir |
+|----------|------------|--------------|
+| RustyCSV (zero_copy) | 2.5 ips | **13.0x faster** |
+| RustyCSV (simd) | 2.5 ips | **12.7x faster** |
+| RustyCSV (parallel) | 2.07 ips | **8.6x faster** |
+| Pure Elixir | 0.24 ips | baseline |
 
 ## Memory Comparison
 
-**Important:** Memory measurement for NIFs is complex. RustyCSV allocates on both the Rust side and BEAM side, while NimbleCSV allocates entirely on the BEAM.
+RustyCSV allocates on the Rust side (boundary vectors during parsing) while pure Elixir allocates entirely on the BEAM. With the `memory_tracking` feature enabled, we measure Rust NIF peak allocation alongside Benchee's BEAM-side measurement.
 
 ### Methodology
 
-We measure three metrics:
-1. **Process Heap**: Memory delta in the calling process (what Benchee measures)
-2. **Rust NIF**: Peak allocation on the Rust side during parsing
-3. **BEAM Allocation**: Memory allocated on the BEAM during parsing (includes binaries)
+We measure two metrics:
+1. **NIF Peak**: Peak allocation on the Rust side during parsing (requires `memory_tracking` feature)
+2. **BEAM Allocation**: Memory allocated on the BEAM during parsing (what Benchee measures)
 
-### Mixed CSV (652 KB input)
+RustyCSV's BEAM-side allocation is ~1.6 KB across all strategies — just list/tuple scaffolding. The parsed field data lives as sub-binary references into the original input binary (no per-field copy).
 
-| Parser | BEAM Allocation (Benchee) |
-|--------|---------------------------|
-| RustyCSV (all strategies) | 1.55 KB |
-| NimbleCSV | 9.40 MB |
+### Decode Memory by File Type
 
-**Key insight:** Benchee's "1.55 KB" for RustyCSV measures process heap delta only, not the actual data. The parsed data exists in BEAM binaries (created by the NIF). NimbleCSV's 9.40 MB includes all list/tuple allocations.
+| Scenario | Strategy | NIF Peak (RustyCSV) | BEAM (Pure Elixir) | Ratio |
+|----------|----------|---------------------|------------------|-------|
+| Simple CSV (334 KB) | simd | 1.41 MB | 6.04 MB | **0.23x** |
+| Simple CSV (334 KB) | parallel | 1.48 MB | 6.04 MB | 0.25x |
+| Quoted CSV (947 KB) | simd | 1.64 MB | 23.89 MB | **0.07x** |
+| Quoted CSV (947 KB) | parallel | 1.72 MB | 23.89 MB | 0.07x |
+| Mixed CSV (652 KB) | simd | 1.63 MB | 9.64 MB | **0.17x** |
+| Large File (6.82 MB) | simd | 15.88 MB | 97.02 MB | **0.16x** |
+| Large File (6.82 MB) | parallel | 16.38 MB | 97.02 MB | 0.17x |
+| Very Large (108 MB) | simd | 240.8 MB | 1407.75 MB | **0.17x** |
 
-**Bottom line:** Both parsers use memory proportional to the data. RustyCSV's memory is split between Rust and BEAM; NimbleCSV's is entirely on BEAM. Neither is dramatically more efficient.
+**Key insight:** RustyCSV uses **5-14x less memory** than pure Elixir. All batch strategies (including parallel) use boundary-based sub-binaries — just `Vec<Vec<(usize, usize)>>` boundary indices (16 bytes per field). Parallel has slightly higher NIF peak due to rayon thread-pool overhead.
 
 ## BEAM Reductions (Scheduler Work)
 
-| Strategy | Reductions | vs NimbleCSV |
+| Strategy | Reductions | vs pure Elixir |
 |----------|------------|--------------|
-| RustyCSV (zero_copy) | 7,100 | 36x fewer |
-| RustyCSV (indexed) | 7,700 | 33x fewer |
-| RustyCSV (basic) | 11,500 | 22x fewer |
-| RustyCSV (simd) | 11,100 | 23x fewer |
-| RustyCSV (parallel) | 16,200 | 16x fewer |
-| NimbleCSV | 254,800 | baseline |
+| RustyCSV (indexed) | 7,000 | 36x fewer |
+| RustyCSV (zero_copy) | 7,600 | 33x fewer |
+| RustyCSV (basic) | 9,700 | 26x fewer |
+| RustyCSV (simd) | 10,500 | 24x fewer |
+| RustyCSV (parallel) | 15,100 | 17x fewer |
+| Pure Elixir | 254,500 | baseline |
 
 **What this means:**
 - Low reductions = less scheduler overhead
@@ -126,7 +135,7 @@ We measure three metrics:
 | Parser | Mode | Time | Speedup |
 |--------|------|------|---------|
 | RustyCSV | line-based | 54ms | **2.2x faster** |
-| NimbleCSV | line-based | 117ms | baseline |
+| Pure Elixir | line-based | 117ms | baseline |
 | RustyCSV | 64KB binary chunks | 244ms | unique capability |
 
 **Result:** RustyCSV is **2.2x faster** for line-based streaming.
@@ -135,7 +144,7 @@ RustyCSV automatically detects `File.Stream` in line mode and switches to 64KB b
 
 ### Arbitrary Binary Chunks
 
-RustyCSV can also process arbitrary binary chunks directly (useful for network streams, compressed data, etc.). NimbleCSV's `parse_stream` operates on line-delimited input, which is the standard approach when using `File.stream!/1`.
+RustyCSV can also process arbitrary binary chunks directly (useful for network streams, compressed data, etc.). Pure Elixir `parse_stream` operates on line-delimited input, which is the standard approach when using `File.stream!/1`.
 
 ## Real-World Benchmark: Amazon Settlement Reports
 
@@ -148,7 +157,7 @@ This section presents results from parsing Amazon SP-API settlement reports in T
 
 ### Small Files (<200 rows)
 
-| Rows | RustyCSV | NimbleCSV | String.split |
+| Rows | RustyCSV | Pure Elixir | String.split |
 |-----:|---------:|----------:|-------------:|
 | 20 | 2ms | 2ms | 2ms |
 | 24 | 2ms | 2ms | 2ms |
@@ -161,7 +170,7 @@ This section presents results from parsing Amazon SP-API settlement reports in T
 
 ### Large Files (10K+ rows)
 
-| Rows | RustyCSV | NimbleCSV | vs NimbleCSV |
+| Rows | RustyCSV | Pure Elixir | vs pure Elixir |
 |-----:|---------:|----------:|-------------:|
 | 9,985 | **46ms** | 64ms | 28% faster |
 | 10,961 | **54ms** | 68ms | 21% faster |
@@ -169,54 +178,98 @@ This section presents results from parsing Amazon SP-API settlement reports in T
 | 11,754 | **56ms** | 78ms | 28% faster |
 | 13,073 | **84ms** | 96ms | 13% faster |
 
-**Conclusion**: RustyCSV is consistently 13-28% faster than NimbleCSV for large real-world files.
+**Conclusion**: RustyCSV is consistently 13-28% faster than pure Elixir for large real-world files.
 
 ## Summary
 
 ### Speed Rankings by File Type
 
-| File Type | Best Strategy | Speedup vs NimbleCSV |
+| File Type | Best Strategy | Speedup vs pure Elixir |
 |-----------|---------------|----------------------|
-| Simple CSV | `:zero_copy` | 3.7x |
-| Quoted CSV | `:zero_copy` | 17.9x |
-| Mixed CSV | `:zero_copy` | 5.8x |
-| Large CSV (7MB) | `:zero_copy` | 10.7x |
-| Very Large CSV (108MB) | `:zero_copy` | 12.5x |
+| Simple CSV | `:simd` | 3.5x |
+| Quoted CSV | `:simd` | 18.8x |
+| Mixed CSV | `:simd` | 5.7x |
+| Large CSV (7MB) | `:simd` | 11.5x |
+| Very Large CSV (108MB) | `:simd` | 13.0x |
 | Streaming (6.8MB) | `parse_stream/2` | 2.2x |
 | Real-world TSV | `:simd` | 1.1-1.3x |
+
+Since `:simd`, `:basic`, `:indexed`, and `:zero_copy` all use the same boundary-based sub-binary path, they perform identically. Use `:simd` (the default).
 
 ### Strategy Selection Guide
 
 | Use Case | Recommended Strategy |
 |----------|---------------------|
 | Default / General use | `:simd` |
-| Maximum speed | `:zero_copy` |
 | Large files with many cores | `:parallel` |
 | Streaming / Unbounded | `parse_stream/2` |
-| Memory-constrained | `:simd` (copies data, frees input) |
 | Debugging | `:basic` |
 
 ### Key Findings
 
-1. **`:zero_copy` is fastest** for all workloads (up to 12.5x faster than NimbleCSV on 108MB)
+1. **All batch strategies use sub-binaries** — `:simd`, `:basic`, `:indexed`, and `:zero_copy` all parse field boundaries then create BEAM sub-binary references into the original input. They perform identically.
 
-2. **Quoted fields show largest gains** — 17.9x faster due to SIMD prefix-XOR quote detection handling all escapes in a single pass
+2. **Quoted fields show largest gains** — 18.8x faster due to SIMD prefix-XOR quote detection handling all escapes in a single pass
 
-3. **`:parallel` is now competitive at all file sizes** — the shared SIMD structural scan eliminated the coordination overhead that previously made it slower than single-threaded strategies on small/medium files
+3. **5-14x less memory than pure Elixir** — Boundary-based parsing uses only 16 bytes per field (offset pairs) on the Rust side, then near-free sub-binary references on the BEAM side. Pure Elixir allocates full copies of every field.
 
-4. **Memory usage is comparable** — RustyCSV allocates on Rust side, NimbleCSV on BEAM. Neither is dramatically more efficient.
+4. **BEAM reductions are minimal** — 16-36x fewer reductions than pure Elixir, reducing scheduler load (but NIFs can't be preempted)
 
-5. **BEAM reductions are minimal** — 16-36x fewer reductions than NimbleCSV, reducing scheduler load (but NIFs can't be preempted)
+5. **Streaming is 2.2x faster** — RustyCSV auto-optimizes `File.Stream` to binary chunk mode. Also supports arbitrary binary chunks for non-file streams.
 
-6. **Streaming is 2.2x faster** — RustyCSV auto-optimizes `File.Stream` to binary chunk mode. Also supports arbitrary binary chunks for non-file streams.
+6. **Real-world vs synthetic** — Synthetic benchmarks show 3.5-19x gains; real-world TSV shows 13-28% gains due to simpler data patterns.
 
-7. **Real-world vs synthetic** — Synthetic benchmarks show 3.7-18x gains; real-world TSV shows 13-28% gains due to simpler data patterns.
+## Encoding Benchmark Results
+
+`dump_to_iodata` returns a single flat binary. See the [README](../README.md#nif-accelerated-encoding) for usage details and how this differs from pure Elixir.
+
+### Throughput
+
+| Scenario | Output Size | RustyCSV ips | Pure Elixir ips | Speedup |
+|----------|-------------|-------------|---------------|---------|
+| Plain UTF-8 — DB export (10K rows × 8 cols) | 709 KB | 638.9 | 253.3 | **2.5x** |
+| Plain UTF-8 — DB export (100K rows × 8 cols) | 7.1 MB | 65.9 | 18.3 | **3.6x** |
+| Plain UTF-8 — User content (10K rows, heavy quoting) | 955 KB | 717.4 | 140.7 | **5.1x** |
+| Plain UTF-8 — Wide table (10K rows × 50 cols) | 2.9 MB | 141.7 | 32.4 | **4.4x** |
+| Formula UTF-8 — DB export (10K rows) | 709 KB | 582.7 | 181.1 | **3.2x** |
+| Formula UTF-8 — Formula-heavy (10K rows, ~40% trigger) | 484 KB | 964.7 | 285.3 | **3.4x** |
+| UTF-16 LE — DB export (10K rows) | 1.4 MB | 379.9 | 12.1 | **31.5x** |
+| Formula + UTF-16 LE — Formula-heavy (10K rows) | 964 KB | 565.3 | 19.5 | **28.9x** |
+
+### Memory
+
+| Scenario | NIF Peak (RustyCSV) | BEAM (Pure Elixir) | Ratio |
+|----------|---------------------|------------------|-------|
+| Plain UTF-8 — DB export (10K rows) | 1.5 MB | 5.1 MB | **0.3x** |
+| Plain UTF-8 — DB export (100K rows) | 12.0 MB | 51.4 MB | **0.2x** |
+| Plain UTF-8 — User content (heavy quoting) | 1.5 MB | 5.9 MB | **0.3x** |
+| Plain UTF-8 — Wide table (50 cols) | 6.0 MB | 30.5 MB | **0.2x** |
+| Formula UTF-8 — DB export (10K rows) | 1.5 MB | 8.2 MB | **0.2x** |
+| Formula UTF-8 — Formula-heavy | 769 KB | 5.4 MB | **0.1x** |
+| UTF-16 LE — DB export (10K rows) | 3.0 MB | 52.8 MB | **0.1x** |
+| Formula + UTF-16 LE — Formula-heavy | 1.5 MB | 37.4 MB | **0.04x** |
+
+RustyCSV's BEAM-side allocation is 80 bytes across all scenarios. NIF peak memory is proportional to the output size.
+
+### Encoding Summary
+
+| Encoding Path | Speedup vs pure Elixir | Memory Ratio |
+|---------------|----------------------|--------------|
+| Plain UTF-8 | 2.5–5.1x faster | 0.2–0.3x |
+| Formula UTF-8 | 3.2–3.4x faster | 0.1–0.2x |
+| UTF-16 LE | 31.5x faster | 0.1x |
+| Formula + UTF-16 LE | 28.9x faster | 0.04x |
+
+Non-UTF-8 encoding shows the largest gains due to single-pass encoding of the entire output buffer.
 
 ## Running the Benchmarks
 
 ```bash
-# Comprehensive benchmark (all strategies)
-mix run bench/comprehensive_bench.exs
+# Decode benchmark (all strategies)
+mix run bench/decode_bench.exs
+
+# Encode benchmark (all encoding paths)
+mix run bench/encode_bench.exs
 
 # Quick benchmark
 mix run bench/csv_bench.exs

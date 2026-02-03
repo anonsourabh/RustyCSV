@@ -15,7 +15,7 @@ rayon = "1.10"    # Data parallelism for parallel parsing
 mimalloc = { version = "0.1", default-features = false, optional = true }
 
 [features]
-default = ["mimalloc"]
+default = ["mimalloc", "memory_tracking"]
 mimalloc = ["dep:mimalloc"]
 # Enable memory tracking (adds overhead - use only for profiling)
 memory_tracking = []
